@@ -1,7 +1,7 @@
-from trainer_gpt import *
+from decoder_only.trainer import *
 import argparse
 import wandb
-from wrap_data_gpt import *
+from decoder_only.data import *
 import random
 import numpy as np
 import yaml
@@ -15,7 +15,7 @@ warnings.filterwarnings("ignore")
 
 def main():
     params = argparse.ArgumentParser("Train GPT model for Chinese to English translation")
-    params.add_argument('--config_file_path', type=str, default='./c2e_gpt_configs.yaml',
+    params.add_argument('--config_file_path', type=str, default='./configs/c2e_gpt.yaml',
                         help='Specifying the path where to look up for configs file.')
     args = params.parse_args()
 
@@ -57,8 +57,8 @@ def main():
                                                                     False)
     
     # Save the unified_lang
-    if not os.path.exists('./unified_lang.pkl'):
-        with open('./unified_lang.pkl', 'wb') as f:
+    if not os.path.exists('./data/unified_lang.pkl'):
+        with open('./data/unified_lang.pkl', 'wb') as f:
             pickle.dump(unified_lang, f)
 
     len_dataloader = len(loader.dataset)
@@ -167,7 +167,7 @@ def main():
     print("Example translations from test set:")
     print("="*50)
     
-    from translator_gpt import GPTTranslator
+    from decoder_only.generation import GPTTranslator
     translator = GPTTranslator(model, unified_lang, device=eval(c2e_configs['device']))
     
     # Get a few examples from test set

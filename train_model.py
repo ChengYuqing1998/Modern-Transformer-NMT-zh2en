@@ -17,7 +17,7 @@ warnings.filterwarnings("ignore")
 
 def main():
     params = argparse.ArgumentParser("Augment data based on a specified method")
-    params.add_argument('--config_file_path', type=str, default='./c2e_configs.yaml',
+    params.add_argument('--config_file_path', type=str, default='./configs/c2e_transformer.yaml',
                         help='Specifying the path where to look up for configs file.')
     args = params.parse_args()
 
@@ -57,10 +57,10 @@ def main():
                                                                               g,
                                                                               False)
     # save the input_lang and notice that when you change the max_trg_sent_len the langs would also be changed:
-    if not os.path.exists('./input_lang.pkl'):
-        with open('./input_lang.pkl', 'wb') as f:
+    if not os.path.exists('./data/input_lang.pkl'):
+        with open('./data/input_lang.pkl', 'wb') as f:
             pickle.dump(input_lang, f)
-        with open('./output_lang.pkl', 'wb') as f:
+        with open('./data/output_lang.pkl', 'wb') as f:
             pickle.dump(output_lang, f)
 
     len_dataloader = len(loader.dataset)

@@ -9,7 +9,7 @@ The repository now contains two related model paths:
 - a classic encoder-decoder Transformer with a pretrained checkpoint for immediate Chinese-to-English inference;
 - a decoder-only translation model for comparing classic Transformer blocks with modern LLM components through configuration switches.
 
-The project uses approximately 90,000 Chinese-English sentence pairs from `cn-eng.txt`. The implementation is intentionally kept local and readable so the attention mechanism, masks, training targets, generation loop, and architectural ablations can be inspected directly.
+The project uses approximately 90,000 Chinese-English sentence pairs from `data/cn-eng.txt`. The implementation is intentionally kept local and readable so the attention mechanism, masks, training targets, generation loop, and architectural ablations can be inspected directly.
 
 ## Why Two Architectures?
 
@@ -84,17 +84,16 @@ translator.py              Encoder-decoder translation logic
 train_model.py             Encoder-decoder training entry point
 make_inference.py          Interactive inference with the pretrained baseline
 
-wrap_data_gpt.py           Decoder-only sequence and vocabulary construction
-trainer_gpt.py             Decoder-only training and BLEU evaluation
-translator_gpt.py          Greedy, beam-search, and sampling generation
-train_gpt.py               Decoder-only training entry point
-c2e_gpt_configs.yaml       Modern-component switches and GPT training settings
-test_gpt_components.py     Component and classic/modern configuration tests
+decoder_only/data.py       Decoder-only sequence and vocabulary construction
+decoder_only/trainer.py    Decoder-only training and BLEU evaluation
+decoder_only/generation.py Greedy, beam-search, and sampling generation
+train_gpt.py               Backward-compatible decoder-only training entry point
 
-cn-eng.txt                 Approximately 90,000 sentence pairs
-input_lang.pkl             Baseline source vocabulary
-output_lang.pkl            Baseline target vocabulary
-models/                    Pretrained baseline and local training checkpoints
+configs/                   Baseline and decoder-only YAML configurations
+data/                      Parallel corpus and serialized vocabularies
+tests/                     Component and classic/modern configuration tests
+models/                    Pretrained baseline and local checkpoints
+logs/                      Generated training and console logs
 ```
 
 ## 1. Create The Environment
@@ -132,8 +131,8 @@ Paths and device selection can be overridden:
 ```bash
 python make_inference.py \
   --model_path './models/c2e_transformer_[0526-test1].pt' \
-  --input_lang_path './input_lang.pkl' \
-  --output_lang_path './output_lang.pkl' \
+  --input_lang_path './data/input_lang.pkl' \
+  --output_lang_path './data/output_lang.pkl' \
   --device auto
 ```
 
@@ -141,17 +140,17 @@ Supported device values are `auto`, `cpu`, and `cuda`.
 
 ## 3. Train The Encoder-Decoder Baseline
 
-Set your W&B entity and experiment values in `c2e_configs.yaml`, then run:
+Set your W&B entity and experiment values in `configs/c2e_transformer.yaml`, then run:
 
 ```bash
-python train_model.py --config_file_path ./c2e_configs.yaml
+python train_model.py --config_file_path ./configs/c2e_transformer.yaml
 ```
 
 For a background Linux process:
 
 ```bash
-nohup python -u train_model.py --config_file_path ./c2e_configs.yaml > console.log 2>&1 &
-tail -f console.log
+nohup python -u train_model.py --config_file_path ./configs/c2e_transformer.yaml > logs/transformer-console.log 2>&1 &
+tail -f logs/transformer-console.log
 ```
 
 Final checkpoints are written under `models/`. Best intermediate state dictionaries are written under `models/intermediate/`.
@@ -161,7 +160,7 @@ Final checkpoints are written under `models/`. Best intermediate state dictionar
 The decoder-only path uses its own configuration:
 
 ```bash
-python train_gpt.py --config_file_path ./c2e_gpt_configs.yaml
+python train_gpt.py --config_file_path ./configs/c2e_gpt.yaml
 ```
 
 It builds a unified vocabulary, trains the causal model, evaluates validation BLEU, evaluates the test split after training, and prints example translations using multiple decoding strategies.
@@ -170,7 +169,7 @@ Generated checkpoints, logs, the generated unified vocabulary, and local W&B run
 
 ## 5. Component Switch Tutorial
 
-The switches are under the `Model architecture` section of `c2e_gpt_configs.yaml`.
+The switches are under the `Model architecture` section of `configs/c2e_gpt.yaml`.
 
 ### Modern LLM-Style Configuration
 
@@ -248,12 +247,12 @@ The component tests cover:
 Run:
 
 ```bash
-python -m unittest -v test_gpt_components.py
+python -m unittest -v tests/test_gpt_components.py
 ```
 
 ## 7. Data Format
 
-`cn-eng.txt` contains one tab-separated sentence pair per line:
+`data/cn-eng.txt` contains one tab-separated sentence pair per line:
 
 ```text
 Chinese sentence<TAB>English sentence

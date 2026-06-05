@@ -33,9 +33,9 @@ def main():
     params = argparse.ArgumentParser("Augment data based on a specified method")
     params.add_argument('--model_path', type=str, default='./models/c2e_transformer_[0526-test1].pt',
                         help='Specifying the path where to look up for model.')
-    params.add_argument('--input_lang_path', type=str, default='./input_lang.pkl',
+    params.add_argument('--input_lang_path', type=str, default='./data/input_lang.pkl',
                         help='Specifying the path where to look up for input lang.')
-    params.add_argument('--output_lang_path', type=str, default='./output_lang.pkl',
+    params.add_argument('--output_lang_path', type=str, default='./data/output_lang.pkl',
                         help='Specifying the path where to look up for output lang.')
     params.add_argument('--device', type=str, default='auto', help='choose cpu cuda or auto')
 
@@ -77,7 +77,6 @@ def main():
 
 if __name__ == '__main__':
     main()
-
 
 
 

@@ -9,7 +9,7 @@
 - 经典 encoder-decoder Transformer，并提供一个可直接运行中译英推理的预训练 checkpoint；
 - 用于实验的 decoder-only 翻译模型，可以通过配置开关比较经典 Transformer 组件与现代 LLM 组件。
 
-项目使用 `cn-eng.txt` 中约 90,000 组中英文句对。注意力、mask、训练目标、生成循环和架构消融都直接实现在仓库中，便于阅读、修改和训练。
+项目使用 `data/cn-eng.txt` 中约 90,000 组中英文句对。注意力、mask、训练目标、生成循环和架构消融都直接实现在仓库中，便于阅读、修改和训练。
 
 ## 为什么有两种架构？
 
@@ -84,17 +84,16 @@ translator.py              Encoder-decoder 翻译逻辑
 train_model.py             Encoder-decoder 训练入口
 make_inference.py          使用预训练基线模型进行交互式推理
 
-wrap_data_gpt.py           Decoder-only 序列与词表构造
-trainer_gpt.py             Decoder-only 训练和 BLEU 评估
-translator_gpt.py          Greedy、beam search 和 sampling 生成
-train_gpt.py               Decoder-only 训练入口
-c2e_gpt_configs.yaml       现代组件开关与 GPT 训练配置
-test_gpt_components.py     组件及经典/现代配置测试
+decoder_only/data.py       Decoder-only 序列与词表构造
+decoder_only/trainer.py    Decoder-only 训练和 BLEU 评估
+decoder_only/generation.py Greedy、beam search 和 sampling 生成
+train_gpt.py               保持兼容的 decoder-only 训练入口
 
-cn-eng.txt                 约 90,000 组中英文句对
-input_lang.pkl             基线模型源语言词表
-output_lang.pkl            基线模型目标语言词表
-models/                    预训练基线和本地训练 checkpoint
+configs/                   基线与 decoder-only YAML 配置
+data/                      中英文语料与序列化词表
+tests/                     组件及经典/现代配置测试
+models/                    预训练基线与本地 checkpoint
+logs/                      自动生成的训练与控制台日志
 ```
 
 ## 1. 创建运行环境
@@ -132,8 +131,8 @@ python make_inference.py
 ```bash
 python make_inference.py \
   --model_path './models/c2e_transformer_[0526-test1].pt' \
-  --input_lang_path './input_lang.pkl' \
-  --output_lang_path './output_lang.pkl' \
+  --input_lang_path './data/input_lang.pkl' \
+  --output_lang_path './data/output_lang.pkl' \
   --device auto
 ```
 
@@ -141,17 +140,17 @@ python make_inference.py \
 
 ## 3. 训练 Encoder-Decoder 基线
 
-在 `c2e_configs.yaml` 中填写自己的 W&B entity 和实验参数，然后运行：
+在 `configs/c2e_transformer.yaml` 中填写自己的 W&B entity 和实验参数，然后运行：
 
 ```bash
-python train_model.py --config_file_path ./c2e_configs.yaml
+python train_model.py --config_file_path ./configs/c2e_transformer.yaml
 ```
 
 Linux 后台运行示例：
 
 ```bash
-nohup python -u train_model.py --config_file_path ./c2e_configs.yaml > console.log 2>&1 &
-tail -f console.log
+nohup python -u train_model.py --config_file_path ./configs/c2e_transformer.yaml > logs/transformer-console.log 2>&1 &
+tail -f logs/transformer-console.log
 ```
 
 最终 checkpoint 保存在 `models/`。训练过程中 loss 最优的 state dictionary 保存在 `models/intermediate/`。
@@ -161,7 +160,7 @@ tail -f console.log
 decoder-only 路径使用独立配置：
 
 ```bash
-python train_gpt.py --config_file_path ./c2e_gpt_configs.yaml
+python train_gpt.py --config_file_path ./configs/c2e_gpt.yaml
 ```
 
 训练入口会创建共用词表、训练 causal model、计算验证集 BLEU、在训练结束后评估测试集，并使用多种解码策略打印翻译样例。
@@ -170,7 +169,7 @@ python train_gpt.py --config_file_path ./c2e_gpt_configs.yaml
 
 ## 5. 组件开关教程
 
-开关位于 `c2e_gpt_configs.yaml` 的 `Model architecture` 部分。
+开关位于 `configs/c2e_gpt.yaml` 的 `Model architecture` 部分。
 
 ### 现代 LLM 风格配置
 
@@ -248,12 +247,12 @@ classic
 运行：
 
 ```bash
-python -m unittest -v test_gpt_components.py
+python -m unittest -v tests/test_gpt_components.py
 ```
 
 ## 7. 数据格式
 
-`cn-eng.txt` 每行包含一组使用 tab 分隔的句对：
+`data/cn-eng.txt` 每行包含一组使用 tab 分隔的句对：
 
 ```text
 中文句子<TAB>英文句子

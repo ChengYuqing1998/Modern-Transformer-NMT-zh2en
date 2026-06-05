@@ -9,4 +9,8 @@ models/*.pt
 models/intermediate/
 !models/c2e_transformer_\[0526-test1\].pt
 
-unified_lang.pkl
+data/unified_lang.pkl
+
+# Local experiments are intentionally excluded from the current release.
+experiments/
+multimodal/

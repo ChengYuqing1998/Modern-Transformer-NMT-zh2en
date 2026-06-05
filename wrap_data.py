@@ -48,7 +48,7 @@ def read_langs(lang1, lang2, reverse=False):
     print("Reading lines...")
 
     # Read the file and split into lines
-    lines = open('./%s-%s.txt' % (lang1, lang2)).read().strip().split('\n')
+    lines = open('./data/%s-%s.txt' % (lang1, lang2)).read().strip().split('\n')
 
     # Split every line into pairs and normalize
     pairs = [[normalize_string(s) for s in l.split('\t')] for l in lines]
