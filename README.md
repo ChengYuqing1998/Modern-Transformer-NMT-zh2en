@@ -1,59 +1,273 @@
-# transformer_CHN2ENG
-使用transformer模型实现机器翻译任务，针对中译英的翻译任务  
-Using Transformer model to do machine translation task focusing on translation from Chinese to English
-## 数据文件 (Data)
-cn-eng.txt中包含90000条中英文句对  
-cn-eng.txt includes 90,000 Chinese-English sentence pairs
-## 安装环境 (Environment set-up)
-假设你的系统(适用于Linux和MacOS)已经安装好Anaconda：  
-Assuming your system (applicable to Linux & MacOS) has been installed with Anaconda：
+[English](README.md) | [中文](README.zh-CN.md)
+
+# Modern-Transformer-NMT-zh2en
+
+`Modern-Transformer-NMT-zh2en` is a pure-PyTorch educational machine translation project built around the original encoder-decoder Transformer.
+
+The repository now contains two related model paths:
+
+- a classic encoder-decoder Transformer with a pretrained checkpoint for immediate Chinese-to-English inference;
+- a decoder-only translation model for comparing classic Transformer blocks with modern LLM components through configuration switches.
+
+The project uses approximately 90,000 Chinese-English sentence pairs from `cn-eng.txt`. The implementation is intentionally kept local and readable so the attention mechanism, masks, training targets, generation loop, and architectural ablations can be inspected directly.
+
+## Why Two Architectures?
+
+The original model follows the Transformer encoder-decoder design:
+
+```text
+Chinese tokens -> Encoder -> Decoder -> English tokens
 ```
-# 首先在终端中进入当前目录
-# enter current dir in the terminal
 
-# 执行下方命令以创建运行项目的conda环境，可将下面环境名称myenv更换为其他名称
-# run cmd lines below to create conda environment, you can rename the env with other names
+The experimental GPT path reformulates translation as causal language modeling over one sequence:
 
-conda create --name myenv python=3.7.3
-source activate myenv
+```text
+[BOS, Chinese source tokens, English target tokens, EOS]
+```
+
+During training, loss is applied only to the English target region. During inference, the model receives the Chinese prefix and autoregressively generates English tokens.
+
+This makes the repository useful for comparing the original Transformer with decoder-only LLM-style design choices while keeping the dataset and task similar.
+
+## Modern Components
+
+The decoder-only model supports the following independently configurable components:
+
+| Component | Configuration | Modern setting | Classic comparison |
+|---|---|---:|---:|
+| Rotary Position Embedding | `use_rope` | RoPE | sinusoidal position encoding |
+| Grouped-Query Attention | `use_gqa`, `n_kv_head` | shared K/V heads | standard multi-head attention |
+| Attention Sinks | `use_attention_sink`, `attention_sink_size` | learned always-visible K/V slots | disabled |
+| SwiGLU FFN | `use_swiglu` | SiLU-gated feed-forward network | ReLU FFN |
+| RMSNorm | `use_rms_norm` | RMS normalization | LayerNorm |
+| Pre-Norm | `use_pre_norm` | normalize before each sublayer | Post-Norm |
+
+These options are intended for educational ablation experiments. The implementation is inspired by common modern LLM designs, but it is not an exact reproduction of Qwen, LLaMA, or any other production model.
+
+## Architecture
+
+### Encoder-Decoder Baseline
+
+The baseline path contains:
+
+- sinusoidal positional encoding;
+- multi-head self-attention;
+- encoder-decoder cross-attention;
+- ReLU position-wise feed-forward networks;
+- residual connections and LayerNorm;
+- greedy autoregressive translation.
+
+A pretrained checkpoint is tracked with Git LFS:
+
+```text
+models/c2e_transformer_[0526-test1].pt
+```
+
+### Decoder-Only Experimental Model
+
+The experimental path contains:
+
+- a unified Chinese-character and English-word vocabulary;
+- causal self-attention with padding-mask support;
+- left-padded batch generation with position IDs;
+- greedy decoding, beam search, top-k sampling, and top-p sampling;
+- configurable RoPE, GQA, attention sinks, SwiGLU, RMSNorm, and normalization order;
+- BLEU evaluation and Weights & Biases logging.
+
+## Contents
+
+```text
+transformer.py             Encoder-decoder and configurable decoder-only models
+wrap_data.py               Encoder-decoder data pipeline
+trainer.py                 Encoder-decoder training loop
+translator.py              Encoder-decoder translation logic
+train_model.py             Encoder-decoder training entry point
+make_inference.py          Interactive inference with the pretrained baseline
+
+wrap_data_gpt.py           Decoder-only sequence and vocabulary construction
+trainer_gpt.py             Decoder-only training and BLEU evaluation
+translator_gpt.py          Greedy, beam-search, and sampling generation
+train_gpt.py               Decoder-only training entry point
+c2e_gpt_configs.yaml       Modern-component switches and GPT training settings
+test_gpt_components.py     Component and classic/modern configuration tests
+
+cn-eng.txt                 Approximately 90,000 sentence pairs
+input_lang.pkl             Baseline source vocabulary
+output_lang.pkl            Baseline target vocabulary
+models/                    Pretrained baseline and local training checkpoints
+```
+
+## 1. Create The Environment
+
+Create a Conda environment and install the dependencies:
+
+```bash
+conda create -n transformer-c2e python=3.8 -y
+conda activate transformer-c2e
 pip install -r requirements.txt
 ```
-## 使用方法 (Methods)
-### 运行训练 (Run Training Process)
+
+The repository keeps its historical PyTorch dependency in `requirements.txt`. If that wheel does not match your CUDA or Python installation, install a compatible PyTorch build first and then install the remaining packages.
+
+The pretrained baseline uses Git LFS. After cloning, verify that the checkpoint has been downloaded:
+
+```bash
+git lfs install
+git lfs pull
+ls -lh models/c2e_transformer_[0526-test1].pt
 ```
-# 由于训练过程日志使用wandb记录，因此需要首先在配置文件 c2e_configs.yaml 中填入你自己的 wandb_entity
-# Since the training process log is recorded using wandb, you need to first fill in your own wandb_entity in the configuration file c2e_configs.yaml
 
-# 执行以下命令在linux系统中后台运行训练脚本
-# Execute the following command to run the training script in the background on the Linux system
-nohup python3 -u train_model.py > console.log 2>&1 & # save print output in console.log
+## 2. Run Pretrained Encoder-Decoder Inference
 
-# 使用下方命令，可以实时观察打印台输出
-# Use the following command to observe the print table output in real time
+The default command uses the included checkpoint and vocabulary files:
+
+```bash
+python make_inference.py
+```
+
+Enter a Chinese sentence in the terminal and press Enter to generate its English translation.
+
+Paths and device selection can be overridden:
+
+```bash
+python make_inference.py \
+  --model_path './models/c2e_transformer_[0526-test1].pt' \
+  --input_lang_path './input_lang.pkl' \
+  --output_lang_path './output_lang.pkl' \
+  --device auto
+```
+
+Supported device values are `auto`, `cpu`, and `cuda`.
+
+## 3. Train The Encoder-Decoder Baseline
+
+Set your W&B entity and experiment values in `c2e_configs.yaml`, then run:
+
+```bash
+python train_model.py --config_file_path ./c2e_configs.yaml
+```
+
+For a background Linux process:
+
+```bash
+nohup python -u train_model.py --config_file_path ./c2e_configs.yaml > console.log 2>&1 &
 tail -f console.log
 ```
-训练中间loss最优的模型以pt格式保存在models/intermediate中，最终模型保存在目录models中，你可以通过修改 c2e_configs.yaml 文件尝试在不同参数下训练模型。
 
-The model with the optimal loss during training is saved in models/intermediate in pt format, and the final model is saved in the directory models. You can try to train the model under different parameters by modifying the c2e_configs.yaml file.
+Final checkpoints are written under `models/`. Best intermediate state dictionaries are written under `models/intermediate/`.
 
-### 推理 (Inference)
+## 4. Train The Decoder-Only Model
+
+The decoder-only path uses its own configuration:
+
+```bash
+python train_gpt.py --config_file_path ./c2e_gpt_configs.yaml
 ```
-# 可在命令参数中指定用以推理的模型的名称和路径
-# The name and path of the model used for inference can be specified in the command parameters.
-python make_inference.py [--model_path MODEL_PATH]
-                         [--input_lang_path INPUT_LANG_PATH]
-                         [--output_lang_path OUTPUT_LANG_PATH]
-                         [--device DEVICE] 
-                         
-# 如果只需默认参数 可以忽略后面的命令参数 直接运行 python make_inference.py
-# If you only need the default parameters, you can ignore the following command parameters and run python make_inference.py directly.
-# input_lang.pkl 文件可用于将输入的源文本token和数值token的互相转换 
-The file can be used to convert input source text tokens and numeric tokens(input id) to and from each other.
-# output_lang.pkl 文件可用于将输出的目标文本token和数值token的互相转换 
-The file can be used to convert the output target text token and numeric token(input id) to and from each other.
-# device 默认值为auto 自动根据系统情况选择cuda还是cpu推理 另外支持指定 'cpu' 或 'cuda'  
-The default value is auto, which automatically selects cuda or cpu inference according to the system conditions. It also supports specifying 'cpu' or 'cuda'.
-```
-执行上述命令后，你可在控制台输入你想尝试翻译的中文句子，按回车键可等待10s左右查看翻译结果，单次运行允许10条翻译。可以重复运行。
 
-After executing the above command, you can enter the Chinese sentence you want to try to translate in the console. Press the Enter key to wait for about 10 seconds to view the translation results. A single run allows 10 translations. Can be run repeatedly.
+It builds a unified vocabulary, trains the causal model, evaluates validation BLEU, evaluates the test split after training, and prints example translations using multiple decoding strategies.
+
+Generated checkpoints, logs, the generated unified vocabulary, and local W&B runs are ignored by Git.
+
+## 5. Component Switch Tutorial
+
+The switches are under the `Model architecture` section of `c2e_gpt_configs.yaml`.
+
+### Modern LLM-Style Configuration
+
+```yaml
+use_rope: True
+use_gqa: True
+n_kv_head: 2
+use_attention_sink: True
+attention_sink_size: 4
+use_swiglu: True
+use_rms_norm: True
+use_pre_norm: True
+```
+
+With `n_head: 8` and `n_kv_head: 2`, eight query heads share two key/value heads. `n_head` must be divisible by `n_kv_head`.
+
+### Classic Decoder-Only Transformer
+
+```yaml
+use_rope: False
+use_gqa: False
+use_attention_sink: False
+use_swiglu: False
+use_rms_norm: False
+use_pre_norm: False
+```
+
+This selects:
+
+```text
+sinusoidal positions + MHA + ReLU FFN + LayerNorm + Post-Norm
+```
+
+When `use_gqa: False`, `n_kv_head` is ignored and the number of K/V heads equals `n_head`. When `use_attention_sink: False`, `attention_sink_size` is ignored.
+
+### One-Component Ablation
+
+To measure one component, start from the classic configuration and enable only that switch. For example, a RoPE-only experiment is:
+
+```yaml
+use_rope: True
+use_gqa: False
+use_attention_sink: False
+use_swiglu: False
+use_rms_norm: False
+use_pre_norm: False
+```
+
+Keep the random seed, data split, model dimensions, optimizer, learning rate, batch size, and epoch count unchanged when comparing experiments.
+
+### Suggested Comparison Matrix
+
+```text
+classic
++ RoPE
++ GQA
++ attention sinks
++ SwiGLU
++ RMSNorm
++ Pre-Norm
+all modern components
+```
+
+Use a different `trial_id`, `ckpt_file_name`, and `log_file_name` for each run.
+
+## 6. Run Tests
+
+The component tests cover:
+
+- SwiGLU shape and backward propagation;
+- GQA with learned attention sinks;
+- left-padded GPT forward/backward behavior;
+- the fully classic decoder-only configuration.
+
+Run:
+
+```bash
+python -m unittest -v test_gpt_components.py
+```
+
+## 7. Data Format
+
+`cn-eng.txt` contains one tab-separated sentence pair per line:
+
+```text
+Chinese sentence<TAB>English sentence
+```
+
+The baseline uses separate source and target vocabularies. The decoder-only path creates one unified vocabulary containing Chinese characters, English words, and four special tokens:
+
+```text
+<pad> <bos> <eos> <unk>
+```
+
+## Notes
+
+- The included pretrained checkpoint belongs to the original encoder-decoder model.
+- Newly trained checkpoints are intentionally not tracked.
+- Muon optimizer experiments are intentionally excluded from this release.
+- The current generation implementation recomputes the full sequence at each step and does not yet use a KV cache.
