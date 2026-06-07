@@ -84,7 +84,6 @@ configs/                   Per-architecture YAML configurations
 checkpoints/               Per-architecture model checkpoints
 tests/                     Encoder-decoder, decoder-only, and tokenizer tests
 data/                      Tab-separated Chinese-English corpus
-experiments/               Optional Muon and exploratory scripts
 ```
 
 ## Quick Start

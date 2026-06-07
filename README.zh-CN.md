@@ -84,7 +84,6 @@ configs/                   按架构分类的 YAML 配置
 checkpoints/               按架构分类的 checkpoint
 tests/                     两种模型与 tokenizer 测试
 data/                      Tab 分隔的中英文语料
-experiments/               可选 Muon 与探索性脚本
 ```
 
 ## Quick Start

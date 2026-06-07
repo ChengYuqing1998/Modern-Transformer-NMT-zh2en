@@ -24,11 +24,14 @@ from inference.translator import (
     EncoderDecoderTranslator,
 )
 
-try:
-    from experiments.muon import Muon, separate_muon_params
-except ImportError:
-    Muon = None
-    separate_muon_params = None
+# Optional local experiment module. Uncomment when experiments/ is available.
+# try:
+#     from experiments.muon import Muon, separate_muon_params
+# except ImportError:
+#     Muon = None
+#     separate_muon_params = None
+Muon = None
+separate_muon_params = None
 
 
 class LabelSmoothing(nn.Module):
