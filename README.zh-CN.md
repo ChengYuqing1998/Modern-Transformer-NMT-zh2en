@@ -391,8 +391,8 @@ decoder-only 组件开关位于 `configs/decoder_only/c2e_gpt.yaml`。
 
 ```yaml
 use_rope: True
-use_gqa: True
-n_kv_head: 2
+use_gqa: True  # 仅打开开关不够，还必须满足 n_kv_head < n_head。
+n_kv_head: 2   # 必须整除 n_head；n_head=8 时：1=MQA，2/4=GQA，8=MHA。
 use_attention_sink: True
 attention_sink_size: 4
 use_swiglu: True
@@ -402,7 +402,11 @@ use_bias: False
 use_weight_tying: False
 ```
 
-当 `n_head: 8`、`n_kv_head: 2` 时，8 个 query head 共用 2 个 key/value head。`n_head` 必须能够被 `n_kv_head` 整除。
+不能只设置 `use_gqa: True`：`n_kv_head` 必须小于 `n_head`，并且
+`n_head` 必须能够被 `n_kv_head` 整除。当 `n_head: 8`、
+`n_kv_head: 2` 时，8 个 query head 共用 2 个 key/value head。
+`n_kv_head: 8` 仍然属于普通 MHA，因此模型构建器会拒绝它与
+`use_gqa: True` 同时使用。
 
 ### 经典 Decoder-Only Transformer
 

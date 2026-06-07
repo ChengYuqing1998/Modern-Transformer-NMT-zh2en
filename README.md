@@ -412,8 +412,8 @@ available in both architecture configurations.
 
 ```yaml
 use_rope: True
-use_gqa: True
-n_kv_head: 2
+use_gqa: True  # GQA also requires n_kv_head < n_head.
+n_kv_head: 2   # Must divide n_head; with n_head=8: 1=MQA, 2/4=GQA, 8=MHA.
 use_attention_sink: True
 attention_sink_size: 4
 use_swiglu: True
@@ -423,7 +423,11 @@ use_bias: False
 use_weight_tying: False
 ```
 
-With `n_head: 8` and `n_kv_head: 2`, eight query heads share two key/value heads. `n_head` must be divisible by `n_kv_head`.
+Setting only `use_gqa: True` is not sufficient: `n_kv_head` must be smaller
+than `n_head`, and `n_head` must be divisible by `n_kv_head`. With
+`n_head: 8` and `n_kv_head: 2`, eight query heads share two key/value heads.
+Using `n_kv_head: 8` remains ordinary MHA, so the model builder rejects that
+combination when `use_gqa: True`.
 
 ### Classic Decoder-Only Transformer
 

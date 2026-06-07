@@ -1033,6 +1033,30 @@ class GPT(nn.Module):
         return output
 
 
+def _resolve_gpt_kv_heads(configs):
+    n_head = int(configs["n_head"])
+    if not configs.get("use_gqa", False):
+        return n_head
+
+    if "n_kv_head" not in configs:
+        raise ValueError(
+            "use_gqa=True requires n_kv_head to be set below n_head"
+        )
+
+    n_kv_head = int(configs["n_kv_head"])
+    if not 0 < n_kv_head < n_head:
+        raise ValueError(
+            "use_gqa=True requires 0 < n_kv_head < n_head; "
+            f"got n_kv_head={n_kv_head}, n_head={n_head}"
+        )
+    if n_head % n_kv_head != 0:
+        raise ValueError(
+            "use_gqa=True requires n_head to be divisible by n_kv_head; "
+            f"got n_head={n_head}, n_kv_head={n_kv_head}"
+        )
+    return n_kv_head
+
+
 def build_GPT(unified_tokenizer, max_context_len, configs: dict):
     """
     Build GPT model with RoPE
@@ -1040,9 +1064,8 @@ def build_GPT(unified_tokenizer, max_context_len, configs: dict):
     max_context_len: maximum context length
     configs: configuration dictionary
     """
-    use_gqa = configs.get('use_gqa', True)
     use_attention_sink = configs.get('use_attention_sink', True)
-    n_kv_head = configs.get('n_kv_head', configs['n_head']) if use_gqa else configs['n_head']
+    n_kv_head = _resolve_gpt_kv_heads(configs)
     attention_sink_size = configs.get('attention_sink_size', 0) if use_attention_sink else 0
     use_bias = configs.get('use_bias', True)
     use_weight_tying = configs.get('use_weight_tying', True)

@@ -8,10 +8,33 @@ from models.transformer import (
     MultiHeadAttentionWithRoPE,
     PositionWiseFeedForward,
     SwiGLU,
+    _resolve_gpt_kv_heads,
 )
 
 
 class GPTComponentTest(unittest.TestCase):
+    def test_gqa_requires_fewer_kv_heads_than_query_heads(self):
+        with self.assertRaisesRegex(
+            ValueError, "0 < n_kv_head < n_head"
+        ):
+            _resolve_gpt_kv_heads(
+                {"use_gqa": True, "n_head": 8, "n_kv_head": 8}
+            )
+
+    def test_gqa_requires_even_head_groups(self):
+        with self.assertRaisesRegex(ValueError, "divisible"):
+            _resolve_gpt_kv_heads(
+                {"use_gqa": True, "n_head": 8, "n_kv_head": 3}
+            )
+
+    def test_disabled_gqa_uses_one_kv_head_per_query_head(self):
+        self.assertEqual(
+            _resolve_gpt_kv_heads(
+                {"use_gqa": False, "n_head": 8, "n_kv_head": 2}
+            ),
+            8,
+        )
+
     def test_swiglu_shape_and_backward(self):
         layer = SwiGLU(16, 32, 0.0, torch.device("cpu"))
         inputs = torch.randn(2, 5, 16, requires_grad=True)

@@ -19,8 +19,10 @@ n_head: 8
 drop_prob: 0.15
 
 use_rope: True
+# GQA is active only when use_gqa=True and n_kv_head is smaller than n_head.
+# n_kv_head must divide n_head exactly. With n_head=8: 1=MQA, 2/4=GQA, 8=MHA.
 use_gqa: False
-n_kv_head: 8
+n_kv_head: 8  # Ignored when use_gqa=False; K/V heads then equal n_head.
 use_attention_sink: True
 attention_sink_size: 4
 use_swiglu: True
