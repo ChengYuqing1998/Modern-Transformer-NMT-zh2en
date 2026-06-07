@@ -91,8 +91,8 @@ data/                      Tab 分隔的中英文语料
 创建并激活环境，然后安装依赖：
 
 ```bash
-conda create -n transformer-c2e python=3.8 -y
-conda activate transformer-c2e
+conda create -n transformer-nmt python=3.10 -y
+conda activate transformer-nmt
 pip install -r requirements.txt
 ```
 
@@ -126,8 +126,8 @@ python -m scripts.train_decoder_only \
 创建 Conda 环境并安装依赖：
 
 ```bash
-conda create -n transformer-c2e python=3.8 -y
-conda activate transformer-c2e
+conda create -n transformer-nmt python=3.10 -y
+conda activate transformer-nmt
 pip install -r requirements.txt
 ```
 

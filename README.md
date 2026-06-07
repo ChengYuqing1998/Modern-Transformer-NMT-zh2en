@@ -91,8 +91,8 @@ data/                      Tab-separated Chinese-English corpus
 Create and activate the environment, then install the dependencies:
 
 ```bash
-conda create -n transformer-c2e python=3.8 -y
-conda activate transformer-c2e
+conda create -n transformer-nmt python=3.10 -y
+conda activate transformer-nmt
 pip install -r requirements.txt
 ```
 
@@ -127,8 +127,8 @@ python -m scripts.train_decoder_only \
 Create a Conda environment and install the dependencies:
 
 ```bash
-conda create -n transformer-c2e python=3.8 -y
-conda activate transformer-c2e
+conda create -n transformer-nmt python=3.10 -y
+conda activate transformer-nmt
 pip install -r requirements.txt
 ```
 
