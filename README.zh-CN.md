@@ -88,9 +88,11 @@ data/                      Tab 分隔的中英文语料
 
 ## Quick Start
 
-创建并激活环境，然后安装依赖：
+克隆仓库，创建并激活环境，然后安装依赖：
 
 ```bash
+git clone https://github.com/ChengYuqing1998/Modern-Transformer-NMT-zh2en.git
+cd Modern-Transformer-NMT-zh2en
 conda create -n transformer-nmt python=3.10 -y
 conda activate transformer-nmt
 pip install -r requirements.txt

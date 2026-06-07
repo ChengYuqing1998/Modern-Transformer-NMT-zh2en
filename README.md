@@ -88,9 +88,12 @@ data/                      Tab-separated Chinese-English corpus
 
 ## Quick Start
 
-Create and activate the environment, then install the dependencies:
+Clone the repository, create and activate the environment, then install the
+dependencies:
 
 ```bash
+git clone https://github.com/ChengYuqing1998/Modern-Transformer-NMT-zh2en.git
+cd Modern-Transformer-NMT-zh2en
 conda create -n transformer-nmt python=3.10 -y
 conda activate transformer-nmt
 pip install -r requirements.txt
