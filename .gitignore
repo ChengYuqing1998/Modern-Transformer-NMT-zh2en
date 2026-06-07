@@ -4,13 +4,14 @@ __pycache__/
 *.log
 logs/
 wandb/
-
-models/*.pt
-models/intermediate/
-!models/c2e_transformer_\[0526-test1\].pt
-
-data/unified_lang.pkl
-
-# Local experiments are intentionally excluded from the current release.
+.env
+.env.*
+!.env.example
 experiments/
-multimodal/
+notebooks/
+configs/multimodal/
+.gitignore
+
+checkpoints/**/*.pt
+checkpoints/**/intermediate/
+!checkpoints/encoder_decoder/c2e_transformer_\[0526-test1\].pt

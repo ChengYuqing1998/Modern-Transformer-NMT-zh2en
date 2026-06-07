@@ -1,0 +1,91 @@
+# Decoder-only translation configuration matching the default model width.
+# Exact count with the tracked tokenizer: 32,588,320 parameters,
+# 62.16 MiB / 65.18 MB when counting BF16 model weights only.
+wandb_mode: 'online'  # options: 'disabled', 'offline', 'online'
+wandb_project: 'modern-transformer-zh-en'
+wandb_watch_model: True
+trial_id: c2e-gpt
+ckpt_file_name: 'c2e_gpt.pt'
+log_file_name: 'c2e_gpt.log'
+
+ckpt_dir: './checkpoints/decoder_only'
+resume_from_checkpoint: null
+log_dir: './logs'
+tokenizer_paths:
+  unified: './tokenizer/artifacts/unified_tokenizer.pkl'
+
+model_dim: 512
+hidden_dim: 2048
+n_layer: 5
+n_head: 8
+drop_prob: 0.15
+
+use_rope: True
+use_gqa: False
+n_kv_head: 8
+use_attention_sink: True
+attention_sink_size: 4
+use_swiglu: True
+use_rms_norm: True
+use_pre_norm: True
+use_bias: True
+use_weight_tying: True
+rope_base: 10000
+
+# Keep pairs where len(target_sentence.split()) is at most this value.
+max_target_sentence_split_length: 128
+min_sequence_token_length: 32
+# Decoder-only context window cap: BOS + source + target + EOS must fit within this.
+max_context_len: 512
+train_ratio: 0.98
+val_ratio: 0.01
+batch_size: 96
+beam_size: 5
+inference_max_new_tokens: 160  # Maximum number of newly generated token IDs.
+inference_use_kv_cache: True  # Set False to recompute the full prefix each step.
+# Translation defaults to deterministic beam search; nucleus sampling is also available.
+inference_decoding_strategy: 'beam_search'  # greedy, beam_search, nucleus_sampling
+inference_temperature: 0.8
+inference_top_p: 0.9
+inference_top_k: 0  # 0 disables top-k filtering.
+inference_repetition_penalty: 1.0
+
+pad_token: 0
+bos_token: 1
+eos_token: 2
+unk_token: 3
+
+max_epochs: 20
+train_precision: 'bf16_mixed'  # options: 'fp32_full', 'bf16_mixed'
+checkpoint_precision: 'bf16'  # options: 'fp32', 'bf16'
+gradient_accumulation_steps: 1
+learning_rate: 5.0e-4
+clip_flag: False
+clip_norm: null
+optimizer_type: 'adam'
+loss_type: 'ce'
+ignore_index: 0
+smoothing: 0.01
+
+scheduler_flag: True
+scheduler_type: 'cosine'
+anneal_rate: 0.8
+patience: 10
+threshold: 0.01
+warmup: 2
+
+print_every_n_steps: 300
+eval_strategy: 'epoch'
+eval_interval: 1
+save_strategy: 'epoch'
+save_interval: 1
+save_total_limit: 3  # Maximum checkpoint directories, including the best one.
+save_best: True
+
+show_eval_sample: True
+eval_sample_sentence: '今天天气很不错，我早餐吃了一个鸡蛋和一杯牛奶。'
+eval_sample_num_beams: 5
+
+device: torch.device("cuda" if torch.cuda.is_available() else "cpu")
+random_seed: 0
+CUBLAS_WORKSPACE_CONFIG: ':4096:8'
