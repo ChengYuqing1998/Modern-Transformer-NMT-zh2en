@@ -82,7 +82,6 @@ datasets/                  语料读取、tensor 构造与 DataLoader
 scripts/                   两个训练入口和统一推理入口
 configs/                   按架构分类的 YAML 配置
 checkpoints/               按架构分类的 checkpoint
-tests/                     两种模型与 tokenizer 测试
 data/                      Tab 分隔的中英文语料
 ```
 
@@ -473,22 +472,7 @@ classic
 每次运行只需要设置不同的 `trial_name`。它同时控制 W&B run 名称、
 checkpoint 子目录、checkpoint 前缀和日志文件名。
 
-## 7. 运行测试
-
-组件测试覆盖：
-
-- SwiGLU 输出形状与反向传播；
-- GQA 与可学习 attention sinks；
-- 左填充 GPT 前向和反向传播；
-- 完全经典的 decoder-only 配置。
-
-运行：
-
-```bash
-python -m unittest discover -v
-```
-
-## 8. 数据格式
+## 7. 数据格式
 
 `data/zh-en.txt` 每行包含一组使用 tab 分隔的句对：
 
@@ -517,7 +501,7 @@ min_sequence_token_length: 32
 max_context_len: 512
 ```
 
-## 9. 推理与 KV Cache
+## 8. 推理与 KV Cache
 
 两种架构及正式推理路径现在都支持可选 KV cache。
 

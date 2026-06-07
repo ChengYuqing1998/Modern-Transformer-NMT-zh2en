@@ -82,7 +82,6 @@ datasets/                  Corpus loading, tensor construction, and DataLoaders
 scripts/                   Two training commands and unified inference
 configs/                   Per-architecture YAML configurations
 checkpoints/               Per-architecture model checkpoints
-tests/                     Encoder-decoder, decoder-only, and tokenizer tests
 data/                      Tab-separated Chinese-English corpus
 ```
 
@@ -498,22 +497,7 @@ all modern components
 Use a different `trial_name` for each run. It controls the W&B run name,
 checkpoint subdirectory, checkpoint prefix, and log filename.
 
-## 7. Run Tests
-
-The component tests cover:
-
-- SwiGLU shape and backward propagation;
-- GQA with learned attention sinks;
-- left-padded GPT forward/backward behavior;
-- the fully classic decoder-only configuration.
-
-Run:
-
-```bash
-python -m unittest discover -v
-```
-
-## 8. Data Format
+## 7. Data Format
 
 `data/zh-en.txt` contains one tab-separated sentence pair per line:
 
@@ -542,7 +526,7 @@ min_sequence_token_length: 32
 max_context_len: 512
 ```
 
-## 9. Inference And KV Cache
+## 8. Inference And KV Cache
 
 Both architectures and their production inference paths support optional KV
 cache decoding.
