@@ -538,6 +538,7 @@ class BaseTrainer:
                         "global_step": self.global_step,
                         "train_loss": loss,
                         "average_train_loss": average_loss,
+                        "learning_rate": self.optimizer.param_groups[0]["lr"],
                     }
                 )
                 if self.global_step % self.print_every_n_steps == 0:
@@ -843,12 +844,6 @@ class DecoderOnlyTrainer(BaseTrainer):
         (loss / accumulation_divisor).backward()
         if should_update:
             self._optimizer_update(clip)
-            wandb.log(
-                {
-                    "global_step": self.global_step,
-                    "learning_rate": self.optimizer.param_groups[0]["lr"],
-                }
-            )
         return loss.item()
 
     def _compute_masked_loss(self, inputs, targets, src_lengths):

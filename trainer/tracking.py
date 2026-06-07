@@ -31,6 +31,15 @@ def init_wandb(config, default_project):
         config=config,
         mode=settings["mode"],
     )
+    wandb.define_metric("global_step")
+    for metric_name in (
+        "train_loss",
+        "average_train_loss",
+        "learning_rate",
+        "val_loss",
+        "val_bleu4",
+    ):
+        wandb.define_metric(metric_name, step_metric="global_step")
     print(
         f"W&B mode: {settings['mode']}; "
         f"project: {settings['project']}"
