@@ -1,6 +1,4 @@
-import pickle
 import json
-import tqdm
 import wandb
 import os
 import shutil
@@ -14,8 +12,7 @@ from tqdm import tqdm
 from torch.nn.functional import log_softmax
 import torch
 import torch.nn as nn
-import nltk
-from nltk.translate.bleu_score import corpus_bleu, SmoothingFunction
+from nltk.translate.bleu_score import corpus_bleu
 from trainer.checkpoint import (
     load_checkpoint_metadata,
     load_checkpoint_model,
@@ -25,7 +22,6 @@ from trainer.checkpoint import (
 from inference.translator import (
     DecoderOnlyTranslator,
     EncoderDecoderTranslator,
-    GPTGenerator,
 )
 
 try:
@@ -42,6 +38,7 @@ class LabelSmoothing(nn.Module):
         super(LabelSmoothing, self).__init__()
         self.criterion = nn.KLDivLoss(reduction="sum")
         self.padding_idx = padding_idx
+        self.ignore_index = padding_idx
         self.confidence = 1.0 - smoothing
         self.smoothing = smoothing
         self.size = size
@@ -60,12 +57,26 @@ class LabelSmoothing(nn.Module):
         return self.criterion(x, true_dist.clone().detach())
 
 
+def _build_classification_loss(
+    loss_type, vocab_size, smoothing, ignore_index
+):
+    ignore_index = int(ignore_index)
+    if loss_type == "ce":
+        return torch.nn.CrossEntropyLoss(ignore_index=ignore_index)
+    if loss_type == "nll":
+        return torch.nn.NLLLoss(ignore_index=ignore_index)
+    if loss_type == "kl":
+        return LabelSmoothing(vocab_size, ignore_index, smoothing)
+    raise ValueError(f"unsupported loss_type: {loss_type}")
+
+
 def build_decoder_only_trainer(model, configs):
+    trial_name, checkpoint_dir, log_file_name = _resolve_trial_paths(configs)
     trainer = DecoderOnlyTrainer(model=model,
-                        ckpt_dir=configs['ckpt_dir'],
-                        ckpt_file_name=configs['ckpt_file_name'],
+                        ckpt_dir=checkpoint_dir,
+                        ckpt_file_name=f"{trial_name}.pt",
                         log_dir=configs['log_dir'],
-                        log_file_name=configs['log_file_name'],
+                        log_file_name=log_file_name,
                         device=eval(configs['device']),
                         write_config=configs
                         )
@@ -98,15 +109,45 @@ def build_decoder_only_trainer(model, configs):
 build_trainer_gpt = build_decoder_only_trainer
 
 
-def remove_element(lst, element):
-    if isinstance(lst, list):
-        return [remove_element(sublst, element) for sublst in lst if sublst != element]
-    else:
-        return lst if lst != element else None
+def _resolve_trial_paths(configs):
+    trial_name = str(configs["trial_name"]).strip()
+    if not trial_name:
+        raise ValueError("trial_name must not be empty")
+    if Path(trial_name).name != trial_name:
+        raise ValueError("trial_name must not contain path separators")
+    checkpoint_dir = str(Path(configs["ckpt_dir"]) / trial_name)
+    log_file_name = f"{trial_name}.log"
+    return trial_name, checkpoint_dir, log_file_name
 
 
 class BaseTrainer:
     architecture = None
+
+    def __init__(
+        self,
+        model,
+        ckpt_dir,
+        ckpt_file_name,
+        log_dir,
+        log_file_name,
+        device,
+        write_config,
+    ):
+        self.model = model
+        self.ckpt_dir = ckpt_dir
+        self.ckpt_file_name = ckpt_file_name
+        self.log_dir = log_dir
+        self.log_file_name = log_file_name
+        self.device = device
+        self.write_config = write_config
+        self.optimizer = None
+        self.loss = None
+        self.scheduler = None
+        self.global_step = 0
+        self.best_loss = float("inf")
+        self._configure_training_policy()
+        self.log = self.make_log(log_dir, log_file_name)
+        self.log.info(self.write_config)
 
     def _configure_training_policy(self):
         config = self.write_config
@@ -372,6 +413,201 @@ class BaseTrainer:
         self.optimizer.zero_grad(set_to_none=True)
         self.global_step += 1
 
+    def build_optimizer(self, learning_rate, optimizer_type, **kwargs):
+        del kwargs
+        if optimizer_type == "sgd":
+            self.optimizer = torch.optim.SGD(
+                self.model.parameters(), lr=learning_rate
+            )
+        elif optimizer_type == "adam":
+            self.optimizer = torch.optim.Adam(
+                self.model.parameters(), lr=learning_rate
+            )
+        else:
+            raise ValueError(
+                f"unsupported optimizer_type: {optimizer_type}"
+            )
+
+    def build_scheduler(
+        self, anneal_rate, scheduler_type, patience, threshold
+    ):
+        if scheduler_type == "exp":
+            self.scheduler = lr_scheduler.ExponentialLR(
+                self.optimizer, anneal_rate
+            )
+        elif scheduler_type == "plateau":
+            self.scheduler = lr_scheduler.ReduceLROnPlateau(
+                self.optimizer,
+                mode="min",
+                patience=patience,
+                factor=anneal_rate,
+                threshold=threshold,
+                threshold_mode="abs",
+            )
+        elif scheduler_type == "cosine":
+            self.scheduler = lr_scheduler.CosineAnnealingLR(
+                self.optimizer,
+                T_max=self.write_config["max_epochs"],
+                eta_min=self.write_config["learning_rate"] * 1e-2,
+            )
+        else:
+            raise ValueError(f"unsupported scheduler_type: {scheduler_type}")
+
+    def _prepare_epoch(self, train_data, epoch):
+        self.model.train()
+        self.optimizer.zero_grad(set_to_none=True)
+        if getattr(train_data, "generator", None) is not None:
+            train_data.generator.manual_seed(
+                int(self.write_config.get("random_seed", 0)) + epoch
+            )
+        if epoch == 1:
+            total_params = sum(
+                parameter.numel()
+                for parameter in self.model.parameters()
+                if parameter.requires_grad
+            )
+            print(f"total_para_counts: {total_params}")
+            wandb.log({"total_para_counts": total_params})
+        return len(train_data)
+
+    def _gradient_accumulation_state(
+        self, micro_batch, num_micro_batches
+    ):
+        group_start = (
+            (micro_batch - 1) // self.gradient_accumulation_steps
+        ) * self.gradient_accumulation_steps + 1
+        accumulation_divisor = min(
+            self.gradient_accumulation_steps,
+            num_micro_batches - group_start + 1,
+        )
+        should_update = (
+            micro_batch % self.gradient_accumulation_steps == 0
+            or micro_batch == num_micro_batches
+        )
+        return accumulation_divisor, should_update
+
+    def _run_training_loop(
+        self,
+        train_data,
+        max_epochs,
+        warmup,
+        clip,
+        evaluate_epoch,
+    ):
+        for epoch in tqdm(range(self.start_epoch, max_epochs + 1)):
+            losses = []
+            num_micro_batches = self._prepare_epoch(train_data, epoch)
+
+            for micro_batch, batch in enumerate(train_data, start=1):
+                if (
+                    epoch == self.start_epoch
+                    and micro_batch <= self.resume_micro_batch
+                ):
+                    continue
+                self.micro_batch_in_epoch = micro_batch
+                self.epoch_complete = False
+                (
+                    accumulation_divisor,
+                    should_update,
+                ) = self._gradient_accumulation_state(
+                    micro_batch, num_micro_batches
+                )
+                loss = self._train_batch(
+                    batch,
+                    accumulation_divisor=accumulation_divisor,
+                    should_update=should_update,
+                    clip=clip,
+                )
+                losses.append(loss)
+                self.log.info(
+                    "Epoch %04d micro-batch %d training loss %.6f",
+                    epoch,
+                    micro_batch,
+                    loss,
+                )
+                if not should_update:
+                    continue
+
+                average_loss = sum(losses) / len(losses)
+                wandb.log(
+                    {
+                        "epoch": epoch,
+                        "global_step": self.global_step,
+                        "train_loss": loss,
+                        "average_train_loss": average_loss,
+                    }
+                )
+                if self.global_step % self.print_every_n_steps == 0:
+                    print(
+                        f"Epoch {epoch:04d} | step {self.global_step:08d} | "
+                        f"average training loss {average_loss:.6f}"
+                    )
+                if self._event_due(
+                    self.save_strategy,
+                    self.save_interval,
+                    epoch,
+                    self.global_step,
+                    "step",
+                ):
+                    self._save_periodic_checkpoint(epoch)
+                if self._event_due(
+                    self.eval_strategy,
+                    self.eval_interval,
+                    epoch,
+                    self.global_step,
+                    "step",
+                ):
+                    evaluate_epoch(epoch)
+                    self.model.train()
+
+            if self._event_due(
+                self.save_strategy,
+                self.save_interval,
+                epoch,
+                self.global_step,
+                "epoch",
+            ):
+                self.epoch_complete = True
+                self._save_periodic_checkpoint(epoch)
+            if self._event_due(
+                self.eval_strategy,
+                self.eval_interval,
+                epoch,
+                self.global_step,
+                "epoch",
+            ):
+                self.epoch_complete = True
+                evaluate_epoch(epoch)
+            self._step_scheduler_after_epoch(epoch, warmup)
+            self.resume_micro_batch = 0
+            self.epoch_complete = True
+
+    def _record_evaluation(self, epoch, eval_loss, eval_bleu):
+        print(
+            f"Epoch {epoch:04d} | step {self.global_step:08d} | "
+            f"val loss {eval_loss:.6f} | BLEU-4 {eval_bleu:.6f}"
+        )
+        self.log.info(
+            "Epoch %04d step %08d val loss %.6f BLEU-4 %.6f",
+            epoch,
+            self.global_step,
+            eval_loss,
+            eval_bleu,
+        )
+        metrics = {"val_loss": eval_loss, "val_bleu4": eval_bleu}
+        wandb.log(
+            {
+                "epoch": epoch,
+                "global_step": self.global_step,
+                **metrics,
+            }
+        )
+        if self.save_best and eval_loss < self.best_loss:
+            self.best_loss = eval_loss
+            self._save_best_checkpoint(epoch, metrics)
+        self._step_scheduler_after_eval(eval_loss)
+        return eval_loss, eval_bleu
+
     def resume_from_checkpoint(self, checkpoint_path):
         checkpoint_path = Path(checkpoint_path)
         if checkpoint_path.is_dir():
@@ -467,77 +703,43 @@ class DecoderOnlyTrainer(BaseTrainer):
 
     def __init__(self, model: nn.Module, ckpt_dir, ckpt_file_name, log_dir,
                  log_file_name, device, write_config, **kwargs):
-        self.model = model
-        self.ckpt_dir = ckpt_dir
-        self.ckpt_file_name = ckpt_file_name
-        self.log_dir = log_dir
-        self.log_file_name = log_file_name
-        self.device = device
-        self.write_config = write_config
-
-        self.optimizer = None
-        self.loss = None
-        self.scheduler = None
-        self.global_step = 0
-        self.best_loss = 1e9
-        self._configure_training_policy()
-
-        # GPT Generator for inference (low-level)
-        self.generator = GPTGenerator(
-            model,
-            pad_token_id=write_config['pad_token'],
-            eos_token_id=write_config['eos_token'],
-            bos_token_id=write_config['bos_token']
+        del kwargs
+        super().__init__(
+            model=model,
+            ckpt_dir=ckpt_dir,
+            ckpt_file_name=ckpt_file_name,
+            log_dir=log_dir,
+            log_file_name=log_file_name,
+            device=device,
+            write_config=write_config,
         )
-
-        # Translator will be initialized lazily when needed
         self.translator = None
 
-        self.log = self.make_log(log_dir, log_file_name)
-        self.log.info(msg=self.write_config)
-
     def build_optimizer(self, learning_rate, optimizer_type, **kwargs):
-        assert optimizer_type in ['sgd', 'adam', 'muon']
-        if optimizer_type == 'sgd':
-            self.optimizer = torch.optim.SGD(self.model.parameters(), lr=learning_rate)
-        elif optimizer_type == 'adam':
-            self.optimizer = torch.optim.Adam(self.model.parameters(), lr=learning_rate)
-        elif optimizer_type == 'muon':
-            if Muon is None:
-                raise ImportError("optimizer_type='muon' requires the optional muon.py module")
-            # Muon optimizer with parameter separation
-            param_groups = separate_muon_params(self.model)
-            self.optimizer = Muon(
-                param_groups,
-                lr=kwargs.get('muon_lr', 0.02),
-                momentum=kwargs.get('muon_momentum', 0.95),
-                nesterov=kwargs.get('muon_nesterov', True),
-                ns_steps=kwargs.get('muon_ns_steps', 5),
-                adamw_lr=kwargs.get('muon_adamw_lr', learning_rate),  # Use config lr for adamw part
-                adamw_betas=kwargs.get('muon_adamw_betas', (0.9, 0.95)),
-                adamw_eps=kwargs.get('muon_adamw_eps', 1e-8),
-                adamw_wd=kwargs.get('muon_adamw_wd', 0.0),
+        if optimizer_type != "muon":
+            return super().build_optimizer(
+                learning_rate, optimizer_type, **kwargs
             )
-            print(f"Using Muon optimizer:")
-            print(f"  Muon group LR: {kwargs.get('muon_lr', 0.02)}")
-            print(f"  AdamW group LR: {learning_rate}")
-            print(f"  Momentum: {kwargs.get('muon_momentum', 0.95)}")
-
-    def build_scheduler(self, anneal_rate, scheduler_type, patience, threshold):
-        assert scheduler_type in ['exp', 'plateau', 'cosine']
-        if scheduler_type == 'exp':
-            self.scheduler = lr_scheduler.ExponentialLR(self.optimizer, anneal_rate)
-        elif scheduler_type == 'plateau':
-            self.scheduler = lr_scheduler.ReduceLROnPlateau(self.optimizer,
-                                                            mode='min',
-                                                            patience=patience,
-                                                            factor=anneal_rate,
-                                                            threshold=threshold,
-                                                            threshold_mode='abs')
-        elif scheduler_type == 'cosine':
-            self.scheduler = lr_scheduler.CosineAnnealingLR(self.optimizer,
-                                                            T_max=self.write_config['max_epochs'],
-                                                            eta_min=self.write_config['learning_rate'] * 1e-2)
+        if Muon is None:
+            raise ImportError(
+                "optimizer_type='muon' requires the optional muon.py module"
+            )
+        param_groups = separate_muon_params(self.model)
+        self.optimizer = Muon(
+            param_groups,
+            lr=kwargs.get("muon_lr", 0.02),
+            momentum=kwargs.get("muon_momentum", 0.95),
+            nesterov=kwargs.get("muon_nesterov", True),
+            ns_steps=kwargs.get("muon_ns_steps", 5),
+            adamw_lr=kwargs.get("muon_adamw_lr", learning_rate),
+            adamw_betas=kwargs.get("muon_adamw_betas", (0.9, 0.95)),
+            adamw_eps=kwargs.get("muon_adamw_eps", 1e-8),
+            adamw_wd=kwargs.get("muon_adamw_wd", 0.0),
+        )
+        print("Using Muon optimizer:")
+        print(f"  Muon group LR: {kwargs.get('muon_lr', 0.02)}")
+        print(f"  AdamW group LR: {learning_rate}")
+        print(f"  Momentum: {kwargs.get('muon_momentum', 0.95)}")
 
     def get_translator(self, unified_lang):
         """
@@ -570,144 +772,42 @@ class DecoderOnlyTrainer(BaseTrainer):
         return self.translator
 
     def build_loss(self, loss_type, smoothing, ignore_index=None, **kwargs):
-        assert loss_type in ['ce', 'nll', 'kl']
-        # For GPT, use unified vocab_size
+        del kwargs
         vocab_size = getattr(self.model, 'vocab_size', None)
         if vocab_size is None:
-            # Try to get from generator if available
             if hasattr(self.model, 'generator'):
                 vocab_size = self.model.generator.proj.out_features
             else:
                 raise ValueError("Cannot determine vocab_size for GPT model")
-
-        if loss_type == 'ce':
-            self.loss = torch.nn.CrossEntropyLoss(ignore_index=int(ignore_index))
-        elif loss_type == 'nll':
-            self.loss = torch.nn.NLLLoss(ignore_index=int(ignore_index))
-        elif loss_type == 'kl':
-            self.loss = LabelSmoothing(vocab_size, int(ignore_index), smoothing)
+        self.loss = _build_classification_loss(
+            loss_type, vocab_size, smoothing, ignore_index
+        )
 
     def fit(self, train_data, val_data, unified_lang, max_epochs, warmup,
             test_data=None, clip=None, **kwargs):
-        """
-        Train GPT model
-        train_data: DataLoader that returns (inputs, targets, src_lengths)
-        val_data: validation DataLoader
-        test_data: test DataLoader (optional, for monitoring test BLEU during training)
-        unified_lang: unified language object for both source and target
-        """
         del test_data, kwargs
-        for epoch in tqdm(range(self.start_epoch, max_epochs + 1)):
-            self.model.train()
-            self.optimizer.zero_grad(set_to_none=True)
-            train_loss_in_epoch = []
-            if getattr(train_data, "generator", None) is not None:
-                train_data.generator.manual_seed(
-                    int(self.write_config.get("random_seed", 0)) + epoch
-                )
-            num_micro_batches = len(train_data)
-            for micro_batch, (inputs, targets, src_lengths) in enumerate(
-                train_data, start=1
-            ):
-                if (
-                    epoch == self.start_epoch
-                    and micro_batch <= self.resume_micro_batch
-                ):
-                    continue
-                self.micro_batch_in_epoch = micro_batch
-                self.epoch_complete = False
-                group_start = (
-                    (micro_batch - 1) // self.gradient_accumulation_steps
-                ) * self.gradient_accumulation_steps + 1
-                accumulation_divisor = min(
-                    self.gradient_accumulation_steps,
-                    num_micro_batches - group_start + 1,
-                )
-                should_update = (
-                    micro_batch % self.gradient_accumulation_steps == 0
-                    or micro_batch == num_micro_batches
-                )
-                loss = self.fit_iter(
-                    inputs,
-                    targets,
-                    src_lengths,
-                    accumulation_divisor=accumulation_divisor,
-                    should_update=should_update,
-                    clip=clip,
-                )
-                train_loss_in_epoch.append(loss)
-                self.log.info(
-                    "Epoch %04d micro-batch %d training loss %.6f",
-                    epoch,
-                    micro_batch,
-                    loss,
-                )
-                if not should_update:
-                    continue
+        self._run_training_loop(
+            train_data=train_data,
+            max_epochs=max_epochs,
+            warmup=warmup,
+            clip=clip,
+            evaluate_epoch=lambda epoch: self._evaluate_and_record(
+                val_data, unified_lang, epoch
+            ),
+        )
 
-                avg_loss = sum(train_loss_in_epoch) / len(train_loss_in_epoch)
-                wandb.log(
-                    {
-                        "epoch": epoch,
-                        "global_step": self.global_step,
-                        "train_loss": loss,
-                        "average_train_loss": avg_loss,
-                    }
-                )
-                if self.global_step % self.print_every_n_steps == 0:
-                    avg_loss = sum(train_loss_in_epoch) / len(train_loss_in_epoch)
-                    print(
-                        f"Epoch {epoch:04d} | step {self.global_step:08d} | "
-                        f"average training loss {avg_loss:.6f}"
-                    )
-
-                if self._event_due(
-                    self.save_strategy,
-                    self.save_interval,
-                    epoch,
-                    self.global_step,
-                    "step",
-                ):
-                    self._save_periodic_checkpoint(epoch)
-
-                if self._event_due(
-                    self.eval_strategy,
-                    self.eval_interval,
-                    epoch,
-                    self.global_step,
-                    "step",
-                ):
-                    self._evaluate_and_record(
-                        val_data, unified_lang, epoch
-                    )
-                    self.model.train()
-
-            if epoch == 1:
-                total_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-                print("total_para_counts: ", total_params)
-                wandb.log({'total_para_counts': total_params})
-
-            if self._event_due(
-                self.save_strategy,
-                self.save_interval,
-                epoch,
-                self.global_step,
-                "epoch",
-            ):
-                self.epoch_complete = True
-                self._save_periodic_checkpoint(epoch)
-            if self._event_due(
-                self.eval_strategy,
-                self.eval_interval,
-                epoch,
-                self.global_step,
-                "epoch",
-            ):
-                self.epoch_complete = True
-                self._evaluate_and_record(val_data, unified_lang, epoch)
-            self._step_scheduler_after_epoch(epoch, warmup)
-            self.resume_micro_batch = 0
-            self.epoch_complete = True
+    def _train_batch(
+        self, batch, accumulation_divisor, should_update, clip
+    ):
+        inputs, targets, src_lengths = batch
+        return self.fit_iter(
+            inputs,
+            targets,
+            src_lengths,
+            accumulation_divisor=accumulation_divisor,
+            should_update=should_update,
+            clip=clip,
+        )
 
     def _evaluate_and_record(self, val_data, unified_lang, epoch):
         requested_eval_tokens = int(
@@ -729,78 +829,14 @@ class DecoderOnlyTrainer(BaseTrainer):
             max_new_tokens=inference_max_new_tokens,
             num_beams=self.write_config.get("beam_size", 5),
         )
-        print(
-            f"Epoch {epoch:04d} | step {self.global_step:08d} | "
-            f"val loss {eval_loss:.6f} | BLEU-4 {eval_bleu4:.6f}"
-        )
-        self.log.info(
-            "Epoch %04d step %08d val loss %.6f BLEU-4 %.6f",
-            epoch,
-            self.global_step,
-            eval_loss,
-            eval_bleu4,
-        )
-        wandb.log(
-            {
-                "epoch": epoch,
-                "global_step": self.global_step,
-                "val_loss": eval_loss,
-                "val_bleu4": eval_bleu4,
-            }
-        )
-        if self.save_best and eval_loss < self.best_loss:
-            self.best_loss = eval_loss
-            self._save_best_checkpoint(
-                epoch,
-                {"val_loss": eval_loss, "val_bleu4": eval_bleu4},
-            )
-        self._step_scheduler_after_eval(eval_loss)
-        return eval_loss, eval_bleu4
+        return self._record_evaluation(epoch, eval_loss, eval_bleu4)
 
     def fit_iter(self, inputs, targets, src_lengths,
                  accumulation_divisor=1, should_update=True, clip=None):
-        """
-        Single training iteration for GPT
-        inputs: [batch_size, seq_len] - [BOS, src, trg, EOS, PAD, ...]
-        targets: [batch_size, seq_len] - [src, trg, EOS, PAD, ...] (shifted by 1)
-        src_lengths: [batch_size] - length of src part (excluding BOS)
-        """
         inputs = inputs.to(self.device)
         targets = targets.to(self.device)
         src_lengths = src_lengths.to(self.device)
-
-        # GPT forward: only needs inputs
-        with self._autocast_context():
-            logits = self.model.forward(inputs)
-
-        # Apply log_softmax for NLL loss, or use raw logits for CE loss
-        if isinstance(self.loss, torch.nn.NLLLoss):
-            logits = log_softmax(logits, dim=-1)
-
-        # Reshape for loss calculation: [batch_size * seq_len, vocab_size]
-        logits_flat = logits.contiguous().view(-1, logits.shape[-1])
-        targets_flat = targets.contiguous().view(-1).clone()
-
-        # Vectorized masking: mask src part in targets
-        batch_size = inputs.shape[0]
-        seq_len = inputs.shape[1]
-        ignore_index = self.loss.ignore_index
-
-        # Create position indices [0, 1, 2, ..., seq_len-1]
-        pos_indices = torch.arange(seq_len, device=self.device).unsqueeze(0)  # [1, seq_len]
-
-        # Expand src_lengths to [batch_size, seq_len] for comparison
-        src_lengths_expanded = src_lengths.unsqueeze(1)  # [batch_size, 1]
-
-        # Create mask: True where position < src_length (src part), False otherwise
-        src_mask = pos_indices < src_lengths_expanded  # [batch_size, seq_len]
-
-        # Apply mask to targets_flat by reshaping and applying
-        targets_reshaped = targets_flat.view(batch_size, seq_len)
-        targets_reshaped = targets_reshaped.masked_fill(src_mask, ignore_index)
-        targets_flat = targets_reshaped.view(-1)
-
-        loss = self.loss(logits_flat, targets_flat)
+        loss = self._compute_masked_loss(inputs, targets, src_lengths)
         (loss / accumulation_divisor).backward()
         if should_update:
             self._optimizer_update(clip)
@@ -811,6 +847,25 @@ class DecoderOnlyTrainer(BaseTrainer):
                 }
             )
         return loss.item()
+
+    def _compute_masked_loss(self, inputs, targets, src_lengths):
+        with self._autocast_context():
+            logits = self.model(inputs)
+        if isinstance(self.loss, (torch.nn.NLLLoss, LabelSmoothing)):
+            logits = log_softmax(logits, dim=-1)
+
+        batch_size, sequence_length = inputs.shape
+        source_mask = (
+            torch.arange(sequence_length, device=self.device).unsqueeze(0)
+            < src_lengths.unsqueeze(1)
+        )
+        masked_targets = targets.masked_fill(
+            source_mask, self.loss.ignore_index
+        )
+        return self.loss(
+            logits.reshape(-1, logits.shape[-1]),
+            masked_targets.reshape(-1),
+        )
 
     def _prepare_left_padded_src(self, inputs, src_lengths, batch_size):
         """
@@ -879,6 +934,34 @@ class DecoderOnlyTrainer(BaseTrainer):
 
         return refer
 
+    def _compute_batch_bleu(
+        self,
+        inputs,
+        targets,
+        src_lengths,
+        translator,
+        max_new_tokens,
+        num_beams,
+    ):
+        batch_size = inputs.size(0)
+        src_seqs, attention_mask = self._prepare_left_padded_src(
+            inputs, src_lengths, batch_size
+        )
+        predictions = translator.translate_batch(
+            src_seqs,
+            attention_mask,
+            max_new_tokens=max_new_tokens,
+            num_beams=num_beams,
+        )
+        references = self._extract_references(
+            targets, src_lengths, batch_size
+        )
+        return corpus_bleu(
+            references,
+            predictions,
+            weights=(0.25, 0.25, 0.25, 0.25),
+        )
+
     def eval(self, val_data, unified_lang, compute_bleu=True, max_new_tokens=160, num_beams=5):
         """
         Evaluate GPT model with loss and BLEU calculation (simplified version)
@@ -897,43 +980,20 @@ class DecoderOnlyTrainer(BaseTrainer):
                 batch_size = len(inputs)
                 sample_num += batch_size
 
-                # ====== Loss Calculation ======
-                with self._autocast_context():
-                    logits = self.model.forward(inputs)
-
-                if isinstance(self.loss, torch.nn.NLLLoss):
-                    logits = log_softmax(logits, dim=-1)
-
-                logits_flat = logits.contiguous().view(-1, logits.shape[-1])
-                targets_flat = targets.contiguous().view(-1).clone()
-
-                # Mask src part in targets
-                seq_len = inputs.shape[1]
-                ignore_index = self.loss.ignore_index
-                pos_indices = torch.arange(seq_len, device=self.device).unsqueeze(0)
-                src_lengths_expanded = src_lengths.unsqueeze(1)
-                src_mask = pos_indices < src_lengths_expanded
-                targets_reshaped = targets_flat.view(batch_size, seq_len)
-                targets_reshaped = targets_reshaped.masked_fill(src_mask, ignore_index)
-                targets_flat = targets_reshaped.view(-1)
-
-                loss = self.loss(logits_flat, targets_flat)
+                loss = self._compute_masked_loss(
+                    inputs, targets, src_lengths
+                )
                 validate_loss += loss.item() * batch_size
 
-                # ====== BLEU Calculation (simplified like classic Transformer) ======
                 if compute_bleu:
-                    # Prepare left-padded source sequences
-                    src_seqs, attention_mask = self._prepare_left_padded_src(inputs, src_lengths, batch_size)
-
-                    # Generate translations
-                    res = translator.translate_batch(src_seqs, attention_mask, max_new_tokens=max_new_tokens, num_beams=num_beams)
-
-                    # Extract references
-                    refer = self._extract_references(targets, src_lengths, batch_size)
-
-                    # Calculate BLEU
-                    bleu4_batch = nltk.translate.bleu_score.corpus_bleu(refer, res, weights=(0.25, 0.25, 0.25, 0.25))
-                    bleu4 += bleu4_batch * batch_size
+                    bleu4 += self._compute_batch_bleu(
+                        inputs,
+                        targets,
+                        src_lengths,
+                        translator,
+                        max_new_tokens,
+                        num_beams,
+                    ) * batch_size
 
         if self.show_eval_sample and self.eval_sample_sentence:
             test_output = translator.translate(
@@ -966,19 +1026,14 @@ class DecoderOnlyTrainer(BaseTrainer):
                 src_lengths = src_lengths.to(self.device)
                 batch_size = len(inputs)
                 sample_num += batch_size
-
-                # Prepare left-padded source sequences
-                src_seqs, attention_mask = self._prepare_left_padded_src(inputs, src_lengths, batch_size)
-
-                # Generate translations
-                res = translator.translate_batch(src_seqs, attention_mask, max_new_tokens=max_new_tokens, num_beams=num_beams)
-
-                # Extract references
-                refer = self._extract_references(targets, src_lengths, batch_size)
-
-                # Calculate BLEU
-                bleu4_batch = nltk.translate.bleu_score.corpus_bleu(refer, res, weights=(0.25, 0.25, 0.25, 0.25))
-                bleu4 += bleu4_batch * batch_size
+                bleu4 += self._compute_batch_bleu(
+                    inputs,
+                    targets,
+                    src_lengths,
+                    translator,
+                    max_new_tokens,
+                    num_beams,
+                ) * batch_size
 
         self.model.train()
         return bleu4 / sample_num
@@ -991,70 +1046,23 @@ class EncoderDecoderTrainer(BaseTrainer):
 
     def __init__(self, model, ckpt_dir, ckpt_file_name, log_dir,
                  log_file_name, device, write_config):
-        self.model = model
-        self.ckpt_dir = ckpt_dir
-        self.ckpt_file_name = ckpt_file_name
-        self.device = device
-        self.write_config = write_config
-        self.optimizer = None
-        self.loss = None
-        self.scheduler = None
-        self.global_step = 0
-        self.best_loss = float("inf")
-        self._configure_training_policy()
-        self.log = self.make_log(log_dir, log_file_name)
-        self.log.info(self.write_config)
-
-    def build_optimizer(self, learning_rate, optimizer_type):
-        if optimizer_type == "sgd":
-            self.optimizer = torch.optim.SGD(
-                self.model.parameters(), lr=learning_rate
-            )
-        elif optimizer_type == "adam":
-            self.optimizer = torch.optim.Adam(
-                self.model.parameters(), lr=learning_rate
-            )
-        else:
-            raise ValueError(
-                "encoder-decoder optimizer_type must be 'sgd' or 'adam'"
-            )
-
-    def build_scheduler(self, anneal_rate, scheduler_type, patience, threshold):
-        if scheduler_type == "exp":
-            self.scheduler = lr_scheduler.ExponentialLR(
-                self.optimizer, anneal_rate
-            )
-        elif scheduler_type == "plateau":
-            self.scheduler = lr_scheduler.ReduceLROnPlateau(
-                self.optimizer,
-                mode="min",
-                patience=patience,
-                factor=anneal_rate,
-                threshold=threshold,
-                threshold_mode="abs",
-            )
-        elif scheduler_type == "cosine":
-            self.scheduler = lr_scheduler.CosineAnnealingLR(
-                self.optimizer,
-                T_max=self.write_config["max_epochs"],
-                eta_min=self.write_config["learning_rate"] * 1e-2,
-            )
-        else:
-            raise ValueError(f"unsupported scheduler_type: {scheduler_type}")
+        super().__init__(
+            model=model,
+            ckpt_dir=ckpt_dir,
+            ckpt_file_name=ckpt_file_name,
+            log_dir=log_dir,
+            log_file_name=log_file_name,
+            device=device,
+            write_config=write_config,
+        )
 
     def build_loss(self, loss_type, smoothing, ignore_index):
-        if loss_type == "ce":
-            self.loss = torch.nn.CrossEntropyLoss(
-                ignore_index=int(ignore_index)
-            )
-        elif loss_type == "nll":
-            self.loss = torch.nn.NLLLoss(ignore_index=int(ignore_index))
-        elif loss_type == "kl":
-            self.loss = LabelSmoothing(
-                self.model.dec_voc_size, int(ignore_index), smoothing
-            )
-        else:
-            raise ValueError(f"unsupported loss_type: {loss_type}")
+        self.loss = _build_classification_loss(
+            loss_type,
+            self.model.dec_voc_size,
+            smoothing,
+            ignore_index,
+        )
 
     def fit_iter(self, source, target, accumulation_divisor=1,
                  should_update=True, clip=None):
@@ -1075,134 +1083,38 @@ class EncoderDecoderTrainer(BaseTrainer):
 
     def fit(self, train_data, val_data, input_tokenizer, output_tokenizer,
             max_epochs, warmup, clip=None, **kwargs):
-        for epoch in tqdm(range(self.start_epoch, max_epochs + 1)):
-            self.model.train()
-            self.optimizer.zero_grad(set_to_none=True)
-            losses = []
-            if getattr(train_data, "generator", None) is not None:
-                train_data.generator.manual_seed(
-                    int(self.write_config.get("random_seed", 0)) + epoch
-                )
-            num_micro_batches = len(train_data)
-            for micro_batch, (source, target) in enumerate(
-                train_data, start=1
-            ):
-                if (
-                    epoch == self.start_epoch
-                    and micro_batch <= self.resume_micro_batch
-                ):
-                    continue
-                self.micro_batch_in_epoch = micro_batch
-                self.epoch_complete = False
-                group_start = (
-                    (micro_batch - 1) // self.gradient_accumulation_steps
-                ) * self.gradient_accumulation_steps + 1
-                accumulation_divisor = min(
-                    self.gradient_accumulation_steps,
-                    num_micro_batches - group_start + 1,
-                )
-                should_update = (
-                    micro_batch % self.gradient_accumulation_steps == 0
-                    or micro_batch == num_micro_batches
-                )
-                loss = self.fit_iter(
-                    source,
-                    target,
-                    accumulation_divisor=accumulation_divisor,
-                    should_update=should_update,
-                    clip=clip,
-                )
-                losses.append(loss)
-                if not should_update:
-                    continue
-                if self.global_step % self.print_every_n_steps == 0:
-                    print(
-                        f"Epoch {epoch:04d} | step {self.global_step:08d} | "
-                        f"average training loss "
-                        f"{sum(losses) / len(losses):.6f}"
-                    )
-                wandb.log(
-                    {
-                        "epoch": epoch,
-                        "global_step": self.global_step,
-                        "train_loss": loss,
-                    }
-                )
-                if self._event_due(
-                    self.save_strategy,
-                    self.save_interval,
-                    epoch,
-                    self.global_step,
-                    "step",
-                ):
-                    self._save_periodic_checkpoint(epoch)
-                if self._event_due(
-                    self.eval_strategy,
-                    self.eval_interval,
-                    epoch,
-                    self.global_step,
-                    "step",
-                ):
-                    self._evaluate_and_record(
-                        val_data,
-                        input_tokenizer,
-                        output_tokenizer,
-                        epoch,
-                    )
-                    self.model.train()
+        del kwargs
+        self._run_training_loop(
+            train_data=train_data,
+            max_epochs=max_epochs,
+            warmup=warmup,
+            clip=clip,
+            evaluate_epoch=lambda epoch: self._evaluate_and_record(
+                val_data,
+                input_tokenizer,
+                output_tokenizer,
+                epoch,
+            ),
+        )
 
-            if self._event_due(
-                self.save_strategy,
-                self.save_interval,
-                epoch,
-                self.global_step,
-                "epoch",
-            ):
-                self.epoch_complete = True
-                self._save_periodic_checkpoint(epoch)
-            if self._event_due(
-                self.eval_strategy,
-                self.eval_interval,
-                epoch,
-                self.global_step,
-                "epoch",
-            ):
-                self.epoch_complete = True
-                self._evaluate_and_record(
-                    val_data,
-                    input_tokenizer,
-                    output_tokenizer,
-                    epoch,
-                )
-            self._step_scheduler_after_epoch(epoch, warmup)
-            self.resume_micro_batch = 0
-            self.epoch_complete = True
+    def _train_batch(
+        self, batch, accumulation_divisor, should_update, clip
+    ):
+        source, target = batch
+        return self.fit_iter(
+            source,
+            target,
+            accumulation_divisor=accumulation_divisor,
+            should_update=should_update,
+            clip=clip,
+        )
 
     def _evaluate_and_record(self, val_data, input_tokenizer,
                              output_tokenizer, epoch):
         val_loss, val_bleu = self.eval(
             val_data, input_tokenizer, output_tokenizer
         )
-        print(
-            f"Epoch {epoch:04d} | step {self.global_step:08d} | "
-            f"val loss {val_loss:.6f} | BLEU-4 {val_bleu:.6f}"
-        )
-        wandb.log(
-            {
-                "epoch": epoch,
-                "global_step": self.global_step,
-                "val_loss": val_loss,
-                "val_bleu4": val_bleu,
-            }
-        )
-        if self.save_best and val_loss < self.best_loss:
-            self.best_loss = val_loss
-            self._save_best_checkpoint(
-                epoch,
-                {"val_loss": val_loss, "val_bleu4": val_bleu},
-            )
-        self._step_scheduler_after_eval(val_loss)
-        return val_loss, val_bleu
+        return self._record_evaluation(epoch, val_loss, val_bleu)
 
     @torch.no_grad()
     def eval(self, val_data, input_tokenizer, output_tokenizer):
@@ -1220,9 +1132,10 @@ class EncoderDecoderTrainer(BaseTrainer):
                 )
             ),
         )
+        num_beams = self.write_config.get("beam_size", 5)
         translator = EncoderDecoderTranslator(
             self.model,
-            beam_size=self.write_config.get("beam_size", 5),
+            beam_size=num_beams,
             max_seq_len=getattr(
                 self.model, "max_trg_len", requested_eval_tokens + 1
             ),
@@ -1261,7 +1174,11 @@ class EncoderDecoderTrainer(BaseTrainer):
             batch_size = source.size(0)
             total_loss += loss.item() * batch_size
             sample_count += batch_size
-            predictions = translator.translate(source)
+            predictions = translator.translate(
+                source,
+                max_new_tokens=inference_max_new_tokens,
+                num_beams=num_beams,
+            )
             for expected, predicted in zip(target.tolist(), predictions):
                 expected = [
                     token
@@ -1298,7 +1215,13 @@ class EncoderDecoderTrainer(BaseTrainer):
             sample_source = torch.tensor(
                 [source_ids], dtype=torch.long, device=self.device
             )
-            sample_prediction = translator.translate(sample_source)[0]
+            sample_prediction = translator.translate(
+                sample_source,
+                max_new_tokens=inference_max_new_tokens,
+                num_beams=self.write_config.get(
+                    "eval_sample_num_beams", num_beams
+                ),
+            )[0]
             print(f"Sample input: {self.eval_sample_sentence}")
             print(
                 "Sample output: "
@@ -1309,12 +1232,13 @@ class EncoderDecoderTrainer(BaseTrainer):
 
 
 def build_encoder_decoder_trainer(model, configs):
+    trial_name, checkpoint_dir, log_file_name = _resolve_trial_paths(configs)
     trainer = EncoderDecoderTrainer(
         model=model,
-        ckpt_dir=configs["ckpt_dir"],
-        ckpt_file_name=configs["ckpt_file_name"],
+        ckpt_dir=checkpoint_dir,
+        ckpt_file_name=f"{trial_name}.pt",
         log_dir=configs["log_dir"],
-        log_file_name=configs["log_file_name"],
+        log_file_name=log_file_name,
         device=eval(configs["device"]),
         write_config=configs,
     )

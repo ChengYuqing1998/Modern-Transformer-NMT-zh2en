@@ -27,7 +27,7 @@ def init_wandb(config, default_project):
     run = wandb.init(
         project=settings["project"],
         entity=settings["entity"],
-        name=str(config["trial_id"]),
+        name=str(config["trial_name"]),
         config=config,
         mode=settings["mode"],
     )

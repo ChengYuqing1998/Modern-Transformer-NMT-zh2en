@@ -41,6 +41,8 @@ decoder-only 模型支持以下可以独立控制的组件：
 | SwiGLU FFN | `use_swiglu` | SiLU 门控前馈网络 | ReLU FFN |
 | RMSNorm | `use_rms_norm` | RMS normalization | LayerNorm |
 | Pre-Norm | `use_pre_norm` | 子层计算前归一化 | Post-Norm |
+| Bias | `use_bias` | 保留线性层与 LayerNorm bias | 删除可配置的 bias 参数 |
+| Weight tying | `use_weight_tying` | 共享 token embedding 与输出头权重 | 使用两套独立权重 |
 
 这些选项主要用于教学和消融实验。实现参考了现代 LLM 的常见设计，但不是对 Qwen、LLaMA 或其他生产模型的精确复现。
 
@@ -83,7 +85,41 @@ checkpoints/               按架构分类的 checkpoint
 tests/                     两种模型与 tokenizer 测试
 data/                      Tab 分隔的中英文语料
 experiments/               可选 Muon 与探索性脚本
-notebooks/                 可执行的架构与推理教程
+```
+
+## Quick Start
+
+创建并激活环境，然后安装依赖：
+
+```bash
+conda create -n transformer-c2e python=3.8 -y
+conda activate transformer-c2e
+pip install -r requirements.txt
+```
+
+直接运行两个已经训练好的示例。以下命令默认读取 checkpoint
+`metadata.json` 中保存的模型结构、tokenizer 路径和推理参数：
+
+```bash
+# Encoder-decoder
+python -m scripts.inference \
+  --checkpoint checkpoints/encoder_decoder/transformer-example-ckpt \
+  --sentence "今天天气很好"
+
+# Decoder-only
+python -m scripts.inference \
+  --checkpoint checkpoints/decoder_only/gpt-example-ckpt \
+  --sentence "今天天气很好"
+```
+
+直接训练两种架构：
+
+```bash
+python -m scripts.train_encoder_decoder \
+  --config-file-path configs/encoder_decoder/c2e_transformer.yaml
+
+python -m scripts.train_decoder_only \
+  --config-file-path configs/decoder_only/c2e_gpt.yaml
 ```
 
 ## 1. 创建运行环境
@@ -125,7 +161,7 @@ nohup python -u -m scripts.train_encoder_decoder --config-file-path ./configs/en
 tail -f logs/console/transformer.log
 ```
 
-Checkpoint 保存在 `checkpoints/encoder_decoder/`。
+Checkpoint 保存在 `checkpoints/encoder_decoder/<trial_name>/`。
 
 ## 4. 训练 Decoder-Only 模型
 
@@ -137,7 +173,7 @@ python -m scripts.train_decoder_only \
 ```
 
 训练入口会创建共用词表、训练 causal model 并计算 BLEU。Checkpoint
-保存在 `checkpoints/decoder_only/`。
+保存在 `checkpoints/decoder_only/<trial_name>/`。
 
 ### Weights & Biases
 
@@ -177,6 +213,14 @@ set +a
 两种翻译架构使用同一个入口。架构、模型配置、序列长度和 tokenizer
 路径都从 checkpoint metadata 中读取：
 
+每种架构的 YAML 配置中都包含默认推理参数。训练保存 checkpoint 时，这些
+配置会写入 `metadata.json`；独立推理默认读取保存后的值。CLI 参数只覆盖
+当前一次调用，优先级为：
+
+```text
+CLI 参数 > checkpoint metadata > 代码默认值
+```
+
 ### 使用 Checkpoint Metadata
 
 这是推荐的默认方式。解码策略、beam size、生成长度、采样参数和 KV cache
@@ -185,12 +229,12 @@ set +a
 ```bash
 # Decoder-only checkpoint
 python -m scripts.inference \
-  --checkpoint checkpoints/decoder_only/c2e_gpt-epoch-0020-step-00017640-best \
+  --checkpoint checkpoints/decoder_only/gpt-example-ckpt \
   --sentence "今天天气很好"
 
 # Encoder-decoder checkpoint
 python -m scripts.inference \
-  --checkpoint checkpoints/encoder_decoder/c2e_transformer-epoch-0020-step-00017640-best \
+  --checkpoint checkpoints/encoder_decoder/transformer-example-ckpt \
   --sentence "今天天气很好"
 ```
 
@@ -200,7 +244,7 @@ CLI 参数只覆盖当前一次推理中的 checkpoint metadata：
 
 ```bash
 python -m scripts.inference \
-  --checkpoint checkpoints/decoder_only/c2e_gpt-epoch-0020-step-00017640-best \
+  --checkpoint checkpoints/decoder_only/gpt-example-ckpt \
   --sentence "今天天气很好" \
   --decoding-strategy nucleus_sampling \
   --inference-max-new-tokens 160 \
@@ -264,7 +308,7 @@ torch.use_deterministic_algorithms(True, warn_only=True)
 可以从 epoch 或 step checkpoint 断点续训：
 
 ```yaml
-resume_from_checkpoint: './checkpoints/decoder_only/c2e_gpt-epoch-0002-step-00001200'
+resume_from_checkpoint: './checkpoints/decoder_only/c2e-gpt/c2e-gpt-epoch-0002-step-00001200'
 ```
 
 恢复内容包括模型、optimizer、scheduler、最佳 eval loss、epoch、
@@ -305,8 +349,8 @@ DataLoader batch 是同一个 step 内的 micro-batch。打印固定按 step 触
 评估和保存可以分别选择按 epoch 或 optimizer step 触发。
 
 所有 checkpoint 目录名都包含 epoch 和 step，例如普通目录
-`c2e_gpt-epoch-0002-step-00001200`，最佳目录
-`c2e_gpt-epoch-0002-step-00001200-best`。产生新最佳节点时，旧最佳目录会
+`c2e-gpt-epoch-0002-step-00001200`，最佳目录
+`c2e-gpt-epoch-0002-step-00001200-best`。产生新最佳节点时，旧最佳目录会
 去掉 `-best` 后缀并成为普通 checkpoint。`save_total_limit` 严格限制目录
 总数；当上限为 3 时，如果最近三个节点包含最佳节点，就保留最近三个；
 否则保留最佳节点和最近两个普通节点。
@@ -341,7 +385,8 @@ dtype。如果更重视保存 FP32 模型权重而不是文件大小，可以设
 
 ## 6. 组件开关教程
 
-开关位于 `configs/decoder_only/c2e_gpt.yaml`。
+decoder-only 组件开关位于 `configs/decoder_only/c2e_gpt.yaml`。
+`use_bias` 和 `use_weight_tying` 则同时存在于两种架构的配置中。
 
 ### 现代 LLM 风格配置
 
@@ -354,6 +399,8 @@ attention_sink_size: 4
 use_swiglu: True
 use_rms_norm: True
 use_pre_norm: True
+use_bias: False
+use_weight_tying: False
 ```
 
 当 `n_head: 8`、`n_kv_head: 2` 时，8 个 query head 共用 2 个 key/value head。`n_head` 必须能够被 `n_kv_head` 整除。
@@ -367,6 +414,8 @@ use_attention_sink: False
 use_swiglu: False
 use_rms_norm: False
 use_pre_norm: False
+use_bias: False
+use_weight_tying: False
 ```
 
 该配置对应：
@@ -376,6 +425,15 @@ use_pre_norm: False
 ```
 
 当 `use_gqa: False` 时，`n_kv_head` 会被忽略，K/V head 数自动等于 `n_head`。当 `use_attention_sink: False` 时，`attention_sink_size` 会被忽略。
+
+`use_bias: False` 会关闭 attention projection、FFN 线性层、输出头以及可配置
+LayerNorm beta 的 bias 参数。`use_weight_tying: True` 会共享 decoder token
+embedding 与输出 projection；encoder-decoder 只共享 decoder embedding 和
+目标输出头，decoder-only 则共享统一词表 embedding 和 LM head。
+
+这两个开关会改变模型参数结构，推理时必须与训练时保持一致。新训练保存的
+checkpoint metadata 会记录它们；加载已有 checkpoint 时擅自修改开关可能
+导致输出异常或 state dict 无法加载。
 
 ### 单组件消融实验
 
@@ -388,6 +446,8 @@ use_attention_sink: False
 use_swiglu: False
 use_rms_norm: False
 use_pre_norm: False
+use_bias: False
+use_weight_tying: False
 ```
 
 比较实验时，应保持 random seed、数据划分、模型维度、优化器、学习率、batch size 和 epoch 数不变。
@@ -405,7 +465,8 @@ classic
 全部现代组件
 ```
 
-每次运行应设置不同的 `trial_id`、`ckpt_file_name` 和 `log_file_name`。
+每次运行只需要设置不同的 `trial_name`。它同时控制 W&B run 名称、
+checkpoint 子目录、checkpoint 前缀和日志文件名。
 
 ## 7. 运行测试
 
@@ -463,14 +524,6 @@ max_context_len: 512
 - Decoder-only 中的 GQA、RoPE、左填充和 attention sinks 需要配套处理
   cache position ID 与 mask，当前实现已经覆盖这些情况。
 - 模型默认 `use_cache=False`，因此训练路径不受影响。
-
-下面的可执行教程会加载真实 decoder-only safetensors checkpoint，对比有无
-cache 的 greedy decoding，打印每层 cache shape，估算显存，并断言两种方式
-生成的 token ID 完全一致：
-
-```text
-notebooks/decoder_only_kv_cache_tutorial.ipynb
-```
 
 设置 `inference_use_kv_cache: False` 或传入 `--no-kv-cache`，可以与完整前缀
 重算进行对照。

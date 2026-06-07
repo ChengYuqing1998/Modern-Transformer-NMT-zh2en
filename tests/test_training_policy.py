@@ -1,13 +1,19 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 from safetensors.torch import load_file
 
-from models.transformer import build_model
+from models.transformer import build_GPT, build_model
 from tokenizer.tokenizer import Vocabulary
-from trainer.trainer import BaseTrainer, EncoderDecoderTrainer
+from trainer.trainer import (
+    BaseTrainer,
+    DecoderOnlyTrainer,
+    EncoderDecoderTrainer,
+    _resolve_trial_paths,
+)
 
 
 class PolicyCheckpointWriter(BaseTrainer):
@@ -30,6 +36,21 @@ class PolicyCheckpointWriter(BaseTrainer):
 
 
 class TrainingPolicyTest(unittest.TestCase):
+    def test_trial_name_derives_checkpoint_directory_and_log_name(self):
+        trial_name, checkpoint_dir, log_file_name = _resolve_trial_paths(
+            {
+                "trial_name": "c2e-gpt-ablation",
+                "ckpt_dir": "./checkpoints/decoder_only",
+            }
+        )
+
+        self.assertEqual(trial_name, "c2e-gpt-ablation")
+        self.assertEqual(
+            checkpoint_dir,
+            "checkpoints/decoder_only/c2e-gpt-ablation",
+        )
+        self.assertEqual(log_file_name, "c2e-gpt-ablation.log")
+
     def test_checkpoint_rotation_counts_best_toward_total_limit(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             writer = PolicyCheckpointWriter(temp_dir)
@@ -198,6 +219,55 @@ class TrainingPolicyTest(unittest.TestCase):
                 accumulation_divisor=2,
                 should_update=True,
             )
+            self.assertEqual(trainer.global_step, 1)
+
+    def test_decoder_only_label_smoothing_runs_training_step(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            tokenizer = Vocabulary("mixed")
+            tokenizer.add_text("你好", character_level=True)
+            tokenizer.add_text("hello world")
+            config = {
+                "model_dim": 16,
+                "hidden_dim": 32,
+                "n_layer": 1,
+                "n_head": 4,
+                "drop_prob": 0.0,
+                "pad_token": 0,
+                "bos_token": 1,
+                "eos_token": 2,
+                "use_gqa": False,
+                "use_attention_sink": False,
+                "_device": "cpu",
+                "gradient_accumulation_steps": 1,
+                "print_every_n_steps": 10,
+                "eval_strategy": "epoch",
+                "eval_interval": 1,
+                "save_strategy": "epoch",
+                "save_interval": 1,
+                "save_total_limit": 2,
+            }
+            model = build_GPT(tokenizer, 8, config)
+            trainer = DecoderOnlyTrainer(
+                model=model,
+                ckpt_dir=temp_dir,
+                ckpt_file_name="model.pt",
+                log_dir=temp_dir,
+                log_file_name="decoder.log",
+                device=torch.device("cpu"),
+                write_config=config,
+            )
+            trainer.build_loss("kl", smoothing=0.1, ignore_index=0)
+            trainer.build_optimizer(1e-3, "adam")
+            trainer.optimizer.zero_grad(set_to_none=True)
+
+            with patch("trainer.trainer.wandb.log"):
+                loss = trainer.fit_iter(
+                    torch.tensor([[1, 4, 5, 6]]),
+                    torch.tensor([[4, 5, 6, 2]]),
+                    torch.tensor([2]),
+                )
+
+            self.assertGreater(loss, 0)
             self.assertEqual(trainer.global_step, 1)
 
     def test_bf16_autocast_runs_forward_and_backward(self):

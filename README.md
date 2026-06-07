@@ -41,6 +41,8 @@ The decoder-only model supports the following independently configurable compone
 | SwiGLU FFN | `use_swiglu` | SiLU-gated feed-forward network | ReLU FFN |
 | RMSNorm | `use_rms_norm` | RMS normalization | LayerNorm |
 | Pre-Norm | `use_pre_norm` | normalize before each sublayer | Post-Norm |
+| Bias | `use_bias` | keep linear and LayerNorm bias terms | remove configurable bias terms |
+| Weight tying | `use_weight_tying` | share token embedding and output-head weights | use separate weights |
 
 These options are intended for educational ablation experiments. The implementation is inspired by common modern LLM designs, but it is not an exact reproduction of Qwen, LLaMA, or any other production model.
 
@@ -83,7 +85,42 @@ checkpoints/               Per-architecture model checkpoints
 tests/                     Encoder-decoder, decoder-only, and tokenizer tests
 data/                      Tab-separated Chinese-English corpus
 experiments/               Optional Muon and exploratory scripts
-notebooks/                 Executable architecture and inference tutorials
+```
+
+## Quick Start
+
+Create and activate the environment, then install the dependencies:
+
+```bash
+conda create -n transformer-c2e python=3.8 -y
+conda activate transformer-c2e
+pip install -r requirements.txt
+```
+
+Run the two pretrained examples. Both commands use the model architecture,
+tokenizer paths, and inference defaults stored in checkpoint
+`metadata.json`:
+
+```bash
+# Encoder-decoder
+python -m scripts.inference \
+  --checkpoint checkpoints/encoder_decoder/transformer-example-ckpt \
+  --sentence "今天天气很好"
+
+# Decoder-only
+python -m scripts.inference \
+  --checkpoint checkpoints/decoder_only/gpt-example-ckpt \
+  --sentence "今天天气很好"
+```
+
+Train either architecture directly:
+
+```bash
+python -m scripts.train_encoder_decoder \
+  --config-file-path configs/encoder_decoder/c2e_transformer.yaml
+
+python -m scripts.train_decoder_only \
+  --config-file-path configs/decoder_only/c2e_gpt.yaml
 ```
 
 ## 1. Create The Environment
@@ -127,7 +164,8 @@ nohup python -u -m scripts.train_encoder_decoder --config-file-path ./configs/en
 tail -f logs/console/transformer.log
 ```
 
-Checkpoints are written under `checkpoints/encoder_decoder/`.
+Checkpoints are written under
+`checkpoints/encoder_decoder/<trial_name>/`.
 
 ## 4. Train The Decoder-Only Model
 
@@ -139,7 +177,7 @@ python -m scripts.train_decoder_only \
 ```
 
 It builds the unified vocabulary, trains the causal model, and evaluates BLEU.
-Checkpoints are written under `checkpoints/decoder_only/`.
+Checkpoints are written under `checkpoints/decoder_only/<trial_name>/`.
 
 ### Weights & Biases
 
@@ -182,6 +220,15 @@ Both translation architectures use the same command. The architecture, model
 configuration, sequence length, and tokenizer paths are read from checkpoint
 metadata:
 
+Inference defaults are defined in each architecture's YAML configuration and
+are copied into checkpoint `metadata.json` during training. Standalone
+inference reads those saved values by default. CLI arguments override them
+only for the current invocation:
+
+```text
+CLI argument > checkpoint metadata > code default
+```
+
 ### Use Checkpoint Metadata
 
 This is the recommended default. Decoding strategy, beam size, generation
@@ -190,12 +237,12 @@ length, sampling parameters, and KV-cache behavior come from `metadata.json`:
 ```bash
 # Decoder-only checkpoint
 python -m scripts.inference \
-  --checkpoint checkpoints/decoder_only/c2e_gpt-epoch-0020-step-00017640-best \
+  --checkpoint checkpoints/decoder_only/gpt-example-ckpt \
   --sentence "今天天气很好"
 
 # Encoder-decoder checkpoint
 python -m scripts.inference \
-  --checkpoint checkpoints/encoder_decoder/c2e_transformer-epoch-0020-step-00017640-best \
+  --checkpoint checkpoints/encoder_decoder/transformer-example-ckpt \
   --sentence "今天天气很好"
 ```
 
@@ -205,7 +252,7 @@ CLI arguments override checkpoint metadata for one invocation:
 
 ```bash
 python -m scripts.inference \
-  --checkpoint checkpoints/decoder_only/c2e_gpt-epoch-0020-step-00017640-best \
+  --checkpoint checkpoints/decoder_only/gpt-example-ckpt \
   --sentence "今天天气很好" \
   --decoding-strategy nucleus_sampling \
   --inference-max-new-tokens 160 \
@@ -274,7 +321,7 @@ Readable model and run metadata is stored in
 Training can resume from either an epoch or step checkpoint:
 
 ```yaml
-resume_from_checkpoint: './checkpoints/decoder_only/c2e_gpt-epoch-0002-step-00001200'
+resume_from_checkpoint: './checkpoints/decoder_only/c2e-gpt/c2e-gpt-epoch-0002-step-00001200'
 ```
 
 Resume restores model, optimizer, scheduler, best evaluation loss, epoch,
@@ -316,8 +363,8 @@ step. Printing is always step-based; evaluation and saving can independently
 use epochs or optimizer steps.
 
 Every checkpoint includes both counters in its directory name. A regular
-checkpoint is named `c2e_gpt-epoch-0002-step-00001200`; a best checkpoint is
-named `c2e_gpt-epoch-0002-step-00001200-best`. When evaluation finds a new
+checkpoint is named `c2e-gpt-epoch-0002-step-00001200`; a best checkpoint is
+named `c2e-gpt-epoch-0002-step-00001200-best`. When evaluation finds a new
 best loss, the previous best directory loses its `-best` suffix and becomes a
 regular checkpoint. A regular checkpoint for the new best node is removed to
 avoid duplication. `save_total_limit` strictly limits all checkpoint
@@ -358,7 +405,9 @@ into multiple beams and retains generation/cache tensors.
 
 ## 6. Component Switch Tutorial
 
-The switches are in `configs/decoder_only/c2e_gpt.yaml`.
+The decoder-only component switches are in
+`configs/decoder_only/c2e_gpt.yaml`. `use_bias` and `use_weight_tying` are
+available in both architecture configurations.
 
 ### Modern LLM-Style Configuration
 
@@ -371,6 +420,8 @@ attention_sink_size: 4
 use_swiglu: True
 use_rms_norm: True
 use_pre_norm: True
+use_bias: False
+use_weight_tying: False
 ```
 
 With `n_head: 8` and `n_kv_head: 2`, eight query heads share two key/value heads. `n_head` must be divisible by `n_kv_head`.
@@ -384,6 +435,8 @@ use_attention_sink: False
 use_swiglu: False
 use_rms_norm: False
 use_pre_norm: False
+use_bias: False
+use_weight_tying: False
 ```
 
 This selects:
@@ -393,6 +446,18 @@ sinusoidal positions + MHA + ReLU FFN + LayerNorm + Post-Norm
 ```
 
 When `use_gqa: False`, `n_kv_head` is ignored and the number of K/V heads equals `n_head`. When `use_attention_sink: False`, `attention_sink_size` is ignored.
+
+`use_bias: False` removes bias parameters from attention projections,
+feed-forward linear layers, output heads, and configurable LayerNorm beta
+terms. `use_weight_tying: True` shares the decoder token embedding with the
+output projection; in encoder-decoder models only the decoder embedding and
+target output head are tied. Decoder-only models tie their unified token
+embedding to the language-model head.
+
+These switches change the model parameter structure. Inference must use the
+same values that were used for training. Checkpoint metadata preserves them
+for newly trained models; changing either switch while loading an existing
+checkpoint can produce invalid output or a state-dict mismatch.
 
 ### One-Component Ablation
 
@@ -405,6 +470,8 @@ use_attention_sink: False
 use_swiglu: False
 use_rms_norm: False
 use_pre_norm: False
+use_bias: False
+use_weight_tying: False
 ```
 
 Keep the random seed, data split, model dimensions, optimizer, learning rate, batch size, and epoch count unchanged when comparing experiments.
@@ -422,7 +489,8 @@ classic
 all modern components
 ```
 
-Use a different `trial_id`, `ckpt_file_name`, and `log_file_name` for each run.
+Use a different `trial_name` for each run. It controls the W&B run name,
+checkpoint subdirectory, checkpoint prefix, and log filename.
 
 ## 7. Run Tests
 
@@ -482,14 +550,6 @@ cache decoding.
 - GQA, RoPE, left padding, and attention sinks require cache-aware position
   IDs and mask handling; these are handled by the decoder-only cache path.
 - Training remains unchanged because `use_cache=False` is the model default.
-
-The executable tutorial below loads the real decoder-only safetensors
-checkpoint, compares greedy decoding with and without cache, prints every cache
-shape, estimates memory, and verifies identical generated token IDs:
-
-```text
-notebooks/decoder_only_kv_cache_tutorial.ipynb
-```
 
 Set `inference_use_kv_cache: False` or pass `--no-kv-cache` to compare against
 full-prefix recomputation.

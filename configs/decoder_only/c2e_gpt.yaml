@@ -4,9 +4,7 @@
 wandb_mode: 'online'  # options: 'disabled', 'offline', 'online'
 wandb_project: 'modern-transformer-zh-en'
 wandb_watch_model: True
-trial_id: c2e-gpt
-ckpt_file_name: 'c2e_gpt.pt'
-log_file_name: 'c2e_gpt.log'
+trial_name: c2e-gpt
 
 ckpt_dir: './checkpoints/decoder_only'
 resume_from_checkpoint: null
@@ -28,8 +26,8 @@ attention_sink_size: 4
 use_swiglu: True
 use_rms_norm: True
 use_pre_norm: True
-use_bias: True
-use_weight_tying: True
+use_bias: False
+use_weight_tying: False
 rope_base: 10000
 
 # Keep pairs where len(target_sentence.split()) is at most this value.
@@ -88,4 +86,5 @@ eval_sample_num_beams: 5
 
 device: torch.device("cuda" if torch.cuda.is_available() else "cpu")
 random_seed: 0
+CUBLAS_WORKSPACE_CONFIG: ':4096:8'
 CUBLAS_WORKSPACE_CONFIG: ':4096:8'

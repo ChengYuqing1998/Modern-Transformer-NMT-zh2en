@@ -4,9 +4,7 @@
 wandb_mode: 'online'  # options: 'disabled', 'offline', 'online'
 wandb_project: 'modern-transformer-zh-en'
 wandb_watch_model: True
-trial_id: c2e-transformer
-ckpt_file_name: 'c2e_transformer.pt'
-log_file_name: 'c2e_transformer.log'
+trial_name: c2e-transformer
 
 ckpt_dir: './checkpoints/encoder_decoder'
 resume_from_checkpoint: null
@@ -21,7 +19,7 @@ n_layer: 5
 n_head: 8
 drop_prob: 0.15
 use_bias: True
-use_weight_tying: True
+use_weight_tying: False
 
 # Keep pairs where len(target_sentence.split()) is at most this value.
 max_target_sentence_split_length: 128
