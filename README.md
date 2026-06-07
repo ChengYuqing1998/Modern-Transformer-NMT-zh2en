@@ -389,8 +389,8 @@ The two default configurations use the same width and depth:
 - `configs/encoder_decoder/c2e_transformer.yaml`: 51,427,166
   parameters, 98.09 MiB / 102.85 MB when counting BF16 model weights only.
 - `configs/decoder_only/c2e_gpt.yaml`: the matching
-  decoder-only width/depth after removing the encoder, 32,588,320 parameters,
-  62.16 MiB / 65.18 MB as BF16 weights.
+  decoder-only width/depth after removing the encoder, 37,807,616 parameters,
+  72.11 MiB / 75.62 MB as BF16 weights.
 
 ### RTX 4090 Memory Reference
 

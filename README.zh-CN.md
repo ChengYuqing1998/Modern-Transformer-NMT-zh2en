@@ -369,8 +369,8 @@ dtype。如果更重视保存 FP32 模型权重而不是文件大小，可以设
 - `configs/encoder_decoder/c2e_transformer.yaml`：51,427,166
   个参数，仅按 BF16 模型权重计算为 98.09 MiB / 102.85 MB。
 - `configs/decoder_only/c2e_gpt.yaml`：移除 encoder 后
-  保持相同宽度和深度的经典 decoder-only，32,588,320 个参数，BF16 权重为
-  62.16 MiB / 65.18 MB。
+  保持相同宽度和深度的经典 decoder-only，37,807,616 个参数，BF16 权重为
+  72.11 MiB / 75.62 MB。
 
 ### RTX 4090 显存参考
 

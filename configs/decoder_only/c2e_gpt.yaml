@@ -1,6 +1,6 @@
 # Decoder-only translation configuration matching the default model width.
-# Exact count with the tracked tokenizer: 32,588,320 parameters,
-# 62.16 MiB / 65.18 MB when counting BF16 model weights only.
+# Exact count with the tracked tokenizer: 37,807,616 parameters,
+# 72.11 MiB / 75.62 MB when counting BF16 model weights only.
 wandb_mode: 'online'  # options: 'disabled', 'offline', 'online'
 wandb_project: 'modern-transformer-zh-en'
 wandb_watch_model: True
